@@ -237,41 +237,82 @@ fn bubble_content_line(
     bubble_bg: Color,
     line: Line<'static>,
 ) -> Line<'static> {
+    let is_code_block = line.style.bg == Some(CODE_BLOCK_BG);
+
     let content_width: usize = line
         .spans
         .iter()
         .map(|span| span.content.chars().count())
         .sum();
-    let right_pad = inner_width.saturating_sub(content_width);
 
     // If the line itself has a bg (e.g. code block), use it for padding areas too
     let fill_bg = line.style.bg.unwrap_or(bubble_bg);
 
-    let mut spans = Vec::with_capacity(line.spans.len() + 5);
-    // Left margin (CHAT_BG)
-    if left_pad > 0 {
-        spans.push(Span::styled(" ".repeat(left_pad), Style::new().bg(CHAT_BG)));
+    if is_code_block {
+        // Code block lines get: margin (bubble_bg) + padding (CODE_BLOCK_BG) on each side
+        let code_inner = inner_width.saturating_sub(4); // 1 margin + 1 padding each side
+        let right_pad = code_inner.saturating_sub(content_width);
+
+        let mut spans = Vec::with_capacity(line.spans.len() + 9);
+        // Left margin (CHAT_BG)
+        if left_pad > 0 {
+            spans.push(Span::styled(" ".repeat(left_pad), Style::new().bg(CHAT_BG)));
+        }
+        // Left braille (bubble_bg)
+        spans.push(Span::styled("\u{2800}", Style::new().bg(bubble_bg)));
+        // Left code margin (bubble_bg)
+        spans.push(Span::styled(" ", Style::new().bg(bubble_bg)));
+        // Left code padding (CODE_BLOCK_BG)
+        spans.push(Span::styled(" ", Style::new().bg(CODE_BLOCK_BG)));
+        // Content spans — preserve explicit bg, otherwise apply CODE_BLOCK_BG
+        spans.extend(line.spans.into_iter().map(|span| {
+            let style = if span.style.bg.is_some() {
+                span.style
+            } else {
+                span.style.patch(Style::new().bg(CODE_BLOCK_BG))
+            };
+            Span::styled(span.content.into_owned(), style)
+        }));
+        // Right code fill + padding (CODE_BLOCK_BG)
+        spans.push(Span::styled(" ".repeat(right_pad + 1), Style::new().bg(CODE_BLOCK_BG)));
+        // Right code margin (bubble_bg)
+        spans.push(Span::styled(" ", Style::new().bg(bubble_bg)));
+        // Right braille (bubble_bg)
+        spans.push(Span::styled("\u{2800}", Style::new().bg(bubble_bg)));
+        // Right margin (CHAT_BG)
+        if left_pad > 0 {
+            spans.push(Span::styled(" ", Style::new().bg(CHAT_BG)));
+        }
+        Line::from(spans).style(Style::new().bg(bubble_bg))
+    } else {
+        let right_pad = inner_width.saturating_sub(content_width);
+
+        let mut spans = Vec::with_capacity(line.spans.len() + 5);
+        // Left margin (CHAT_BG)
+        if left_pad > 0 {
+            spans.push(Span::styled(" ".repeat(left_pad), Style::new().bg(CHAT_BG)));
+        }
+        // Left bubble padding — Braille blank (U+2800) prevents ratatui's WordWrapper
+        // from splitting blank lines into empty wrapped lines
+        spans.push(Span::styled("\u{2800}", Style::new().bg(fill_bg)));
+        // Content spans — preserve explicit bg (e.g. code block bg), otherwise apply bubble_bg
+        spans.extend(line.spans.into_iter().map(|span| {
+            let style = if span.style.bg.is_some() {
+                span.style
+            } else {
+                span.style.patch(Style::new().bg(fill_bg))
+            };
+            Span::styled(span.content.into_owned(), style)
+        }));
+        // Right bubble padding — fill with the same bg as content
+        spans.push(Span::styled(format!("{}\u{2800}", " ".repeat(right_pad)), Style::new().bg(fill_bg)));
+        // Right margin (CHAT_BG)
+        if left_pad > 0 {
+            spans.push(Span::styled(" ", Style::new().bg(CHAT_BG)));
+        }
+        // Line bg = fill_bg: any uncovered position gets the correct color
+        Line::from(spans).style(Style::new().bg(fill_bg))
     }
-    // Left bubble padding — Braille blank (U+2800) prevents ratatui's WordWrapper
-    // from splitting blank lines into empty wrapped lines
-    spans.push(Span::styled("\u{2800}", Style::new().bg(fill_bg)));
-    // Content spans — preserve explicit bg (e.g. code block bg), otherwise apply bubble_bg
-    spans.extend(line.spans.into_iter().map(|span| {
-        let style = if span.style.bg.is_some() {
-            span.style
-        } else {
-            span.style.patch(Style::new().bg(fill_bg))
-        };
-        Span::styled(span.content.into_owned(), style)
-    }));
-    // Right bubble padding — fill with the same bg as content
-    spans.push(Span::styled(format!("{}\u{2800}", " ".repeat(right_pad)), Style::new().bg(fill_bg)));
-    // Right margin (CHAT_BG)
-    if left_pad > 0 {
-        spans.push(Span::styled(" ", Style::new().bg(CHAT_BG)));
-    }
-    // Line bg = fill_bg: any uncovered position gets the correct color
-    Line::from(spans).style(Style::new().bg(fill_bg))
 }
 
 pub(super) fn compact_shell_output(content: &str, head: usize, tail: usize) -> String {
@@ -486,7 +527,9 @@ pub(super) fn render_message_lines(
                 tool_header_indices.push((tool_call_id.clone(), lines.len()));
             }
         }
-        for wrapped in wrap_line_to_width(bubble_line, inner_width) {
+        let is_code = bubble_line.style.bg == Some(CODE_BLOCK_BG);
+        let wrap_w = if is_code { inner_width.saturating_sub(4) } else { inner_width };
+        for wrapped in wrap_line_to_width(bubble_line, wrap_w) {
             lines.push(bubble_content_line(
                 left_pad,
                 inner_width,
@@ -799,7 +842,9 @@ pub(super) fn markdown_to_lines(text: &str, width: u16) -> Vec<Line<'static>> {
     let wrap_width = width.max(1) as usize;
     let mut wrapped = Vec::new();
     for line in lines {
-        wrapped.extend(wrap_line_to_width(line, wrap_width));
+        let is_code = line.style.bg == Some(CODE_BLOCK_BG);
+        let w = if is_code { wrap_width.saturating_sub(4) } else { wrap_width };
+        wrapped.extend(wrap_line_to_width(line, w));
     }
 
     wrapped

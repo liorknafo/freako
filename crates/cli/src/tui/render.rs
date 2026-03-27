@@ -10,7 +10,7 @@ use super::message::{
     truncate_middle,
 };
 use super::{
-    App, InputMode, PendingApproval, ASSISTANT_STYLE, CHAT_BG, INPUT_BG,
+    App, InputMode, PendingApproval, ASSISTANT_STYLE, CHAT_BG, CODE_BLOCK_BG, INPUT_BG,
     INPUT_CURSOR_STYLE, MUTED_STYLE, PendingShellViewport, SELECTED_BG, SHELL_CONSOLE_BG,
     SHELL_CONSOLE_BORDER, SHELL_CONSOLE_FG, SHELL_CONSOLE_VISIBLE_LINES, SIDEBAR_BG,
     SPINNER_FRAMES, THINKING_STYLE, TOOL_STYLE,
@@ -359,10 +359,37 @@ fn render_status_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
 fn render_streaming_markdown(text: &str, spinner: &str, width: u16) -> Vec<Line<'static>> {
     use super::message::markdown_to_lines;
     let mut lines = vec![Line::styled(format!("{} AI:", spinner), ASSISTANT_STYLE.add_modifier(Modifier::BOLD))];
-    for l in markdown_to_lines(text, width.saturating_sub(4)) {
-        let mut indented: Vec<Span<'static>> = vec![Span::raw("  ")];
-        indented.extend(l.spans);
-        lines.push(Line::from(indented));
+    // markdown_to_lines wraps code block lines to (md_width - 4) already
+    let md_width = width.saturating_sub(4);
+    let code_content_width = md_width.saturating_sub(4) as usize; // margin + padding each side
+    for l in markdown_to_lines(text, md_width) {
+        if l.style.bg == Some(CODE_BLOCK_BG) {
+            let content_width: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
+            let right_fill = code_content_width.saturating_sub(content_width);
+            let mut spans: Vec<Span<'static>> = Vec::with_capacity(l.spans.len() + 6);
+            // 2-char indent + 1-char margin (no bg)
+            spans.push(Span::raw("   "));
+            // 1-char left padding (CODE_BLOCK_BG)
+            spans.push(Span::styled(" ", Style::new().bg(CODE_BLOCK_BG)));
+            // Content — ensure CODE_BLOCK_BG
+            spans.extend(l.spans.into_iter().map(|span| {
+                let style = if span.style.bg.is_some() {
+                    span.style
+                } else {
+                    span.style.patch(Style::new().bg(CODE_BLOCK_BG))
+                };
+                Span::styled(span.content.into_owned(), style)
+            }));
+            // Right fill + 1-char right padding (CODE_BLOCK_BG)
+            spans.push(Span::styled(" ".repeat(right_fill + 1), Style::new().bg(CODE_BLOCK_BG)));
+            // 1-char right margin (no bg)
+            spans.push(Span::raw(" "));
+            lines.push(Line::from(spans));
+        } else {
+            let mut indented: Vec<Span<'static>> = vec![Span::raw("  ")];
+            indented.extend(l.spans);
+            lines.push(Line::from(indented));
+        }
     }
     lines
 }
