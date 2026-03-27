@@ -1,0 +1,19 @@
+# Agent Instructions
+
+This is the freako project - a native desktop AI code assistant built in Rust.
+
+## Project-Specific Guidelines
+
+- Follow Rust best practices and idiomatic patterns
+- Maintain separation of concerns between core, GUI, and CLI crates
+- Keep the agent loop efficient and non-blocking
+- Ensure all file operations are safe and respect user approvals
+- Test changes thoroughly before committing
+
+## Architecture Notes
+
+- `core` crate: Provider abstraction, agent loop, tools, config, session management
+- `gui` crate: Iced-based desktop GUI
+- `cli` crate: Ratatui-based terminal UI
+- Tools are registered in a ToolRegistry and executed with approval flow
+- Sessions are persisted to SQLite for conversation history

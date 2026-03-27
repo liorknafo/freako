@@ -1,0 +1,11 @@
+pub mod approval_dialog;
+pub mod chat_view;
+pub mod code_view;
+pub mod diff_view;
+pub mod input_area;
+pub mod settings_panel;
+pub mod sidebar;
+pub mod status_bar;
+pub mod theme;
+pub mod tool_view;
+pub mod widgets;

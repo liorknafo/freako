@@ -1,0 +1,180 @@
+use crate::config::types::{ContextConfig, MemoryConfig};
+use crate::provider::types::{LLMContent, LLMMessage, LLMRequest, LLMRole, LLMTool};
+use crate::session::types::{ConversationMessage, MessagePart, Role};
+use crate::tools::ToolRegistry;
+
+pub fn build_request(
+    messages: &[ConversationMessage],
+    registry: &ToolRegistry,
+    model: &str,
+    max_tokens: u32,
+    temperature: Option<f32>,
+    thinking_effort: Option<&str>,
+    system_prompt: Option<&str>,
+    context_config: &ContextConfig,
+    _memory_config: &MemoryConfig,
+) -> LLMRequest {
+    let request_messages = compact_messages(messages, context_config);
+    let llm_messages = request_messages.iter().map(convert_message).collect();
+    let tools = registry
+        .all_tools()
+        .into_iter()
+        .map(|t| LLMTool {
+            name: t.name().to_string(),
+            description: t.description().to_string(),
+            parameters: t.parameters_schema(),
+        })
+        .collect();
+
+    LLMRequest {
+        messages: llm_messages,
+        tools,
+        model: model.to_string(),
+        max_tokens,
+        temperature,
+        system_prompt: system_prompt.map(|s| s.to_string()),
+        thinking_effort: thinking_effort.map(|s| s.to_string()),
+    }
+}
+
+pub fn compact_messages(
+    messages: &[ConversationMessage],
+    context_config: &ContextConfig,
+) -> Vec<ConversationMessage> {
+    let interaction_count: usize = messages.iter().map(|m| m.parts.len().max(1)).sum();
+    if !context_config.enable_compaction || interaction_count <= context_config.compact_after_messages {
+        return messages.to_vec();
+    }
+
+    let keep_recent = context_config
+        .keep_recent_messages
+        .min(messages.len().saturating_sub(1));
+    let split_at = messages.len().saturating_sub(keep_recent);
+    if split_at == 0 {
+        return messages.to_vec();
+    }
+
+    let older = &messages[..split_at];
+    let recent = &messages[split_at..];
+    let summary = summarize_messages(older);
+
+    if summary.trim().is_empty() {
+        return messages.to_vec();
+    }
+
+    let mut compacted = Vec::with_capacity(recent.len() + 1);
+    compacted.push(ConversationMessage {
+        role: Role::System,
+        parts: vec![MessagePart::Text { text: summary }],
+        timestamp: chrono::Utc::now(),
+    });
+    compacted.extend_from_slice(recent);
+    compacted
+}
+
+fn summarize_messages(messages: &[ConversationMessage]) -> String {
+    let mut lines = vec![
+        "Compacted conversation summary: earlier messages were condensed to save context window space. Preserve ongoing constraints, decisions, and unresolved work from this summary.".to_string(),
+        String::new(),
+    ];
+
+    for message in messages {
+        let label = match message.role {
+            Role::System => "System",
+            Role::User => "User",
+            Role::Assistant => "Assistant",
+            Role::Tool => "Tool",
+        };
+
+        for part in &message.parts {
+            match part {
+                MessagePart::Text { text } => {
+                    let normalized = normalize_whitespace(text);
+                    if !normalized.is_empty() {
+                        lines.push(format!("- {label}: {normalized}"));
+                    }
+                }
+                MessagePart::Image { media_type, .. } => {
+                    lines.push(format!("- {label}: [image: {media_type}]"));
+                }
+                MessagePart::ToolCall { name, arguments, .. } => {
+                    lines.push(format!(
+                        "- Assistant tool call `{name}` with arguments: {}",
+                        truncate_chars(&arguments.to_string(), 400)
+                    ));
+                }
+                MessagePart::ToolResult { name, content, is_error, .. } => {
+                    let status = if *is_error { "error" } else { "result" };
+                    let normalized = normalize_whitespace(content);
+                    if !normalized.is_empty() {
+                        lines.push(format!(
+                            "- Tool `{name}` {status}: {}",
+                            truncate_chars(&normalized, 500)
+                        ));
+                    }
+                }
+                MessagePart::ToolOutput { stream, content, .. } => {
+                    let normalized = normalize_whitespace(content);
+                    if !normalized.is_empty() {
+                        let stream_label = match stream {
+                            crate::agent::events::ToolOutputStream::Stdout => "stdout",
+                            crate::agent::events::ToolOutputStream::Stderr => "stderr",
+                        };
+                        lines.push(format!(
+                            "- Tool output ({stream_label}): {}",
+                            truncate_chars(&normalized, 500)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    truncate_chars(&lines.join("\n"), 12_000)
+}
+
+fn normalize_whitespace(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_chars(input: &str, max_chars: usize) -> String {
+    let mut out = input.chars().take(max_chars).collect::<String>();
+    if input.chars().count() > max_chars {
+        out.push_str("...");
+    }
+    out
+}
+
+fn convert_message(msg: &ConversationMessage) -> LLMMessage {
+    let role = match msg.role {
+        Role::System => LLMRole::System,
+        Role::User => LLMRole::User,
+        Role::Assistant => LLMRole::Assistant,
+        Role::Tool => LLMRole::Tool,
+    };
+
+    let content = msg
+        .parts
+        .iter()
+        .map(|part| match part {
+            MessagePart::Text { text } => LLMContent::Text(text.clone()),
+            MessagePart::Image { media_type, data } => LLMContent::Image {
+                media_type: media_type.clone(),
+                data: data.clone(),
+            },
+            MessagePart::ToolCall { id, name, arguments } => LLMContent::ToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                arguments: arguments.clone(),
+            },
+            MessagePart::ToolResult { tool_call_id, content, is_error, .. } => LLMContent::ToolResult {
+                tool_call_id: tool_call_id.clone(),
+                content: content.clone(),
+                is_error: *is_error,
+            },
+            MessagePart::ToolOutput { .. } => LLMContent::Text(String::new()),
+        })
+        .collect();
+
+    LLMMessage { role, content }
+}

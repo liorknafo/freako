@@ -1,0 +1,28 @@
+[package]
+name = "freako-gui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "freako-gui"
+path = "src/main.rs"
+
+[dependencies]
+freako-core = { path = "../core" }
+iced-selectable-markdown = { path = "../iced-selectable-markdown" }
+
+iced = { version = "0.14", features = ["markdown", "highlighter", "tokio", "debug", "lazy", "advanced"] }
+
+syntect.workspace = true
+tokio.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+open = "5"
+arboard = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
