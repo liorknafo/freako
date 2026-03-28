@@ -6,6 +6,7 @@ pub const EDIT_TASK_TOOL_NAME: &str = "edit_task";
 pub const READ_TASK_TOOL_NAME: &str = "read_task";
 pub const READ_PLAN_TOOL_NAME: &str = "read_plan";
 pub const REVIEW_PLAN_TOOL_NAME: &str = "review_plan";
+pub const DELETE_TASK_TOOL_NAME: &str = "delete_task";
 pub const UPDATE_TASK_STATUS_TOOL_NAME: &str = "update_task_status";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

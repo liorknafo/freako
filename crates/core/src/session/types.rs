@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::agent::events::ToolOutputStream;
+use crate::agent::events::{PlanTask, ToolOutputStream};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -83,6 +83,10 @@ pub struct Session {
     pub working_directory: String,
     pub total_input_tokens: u32,
     pub total_output_tokens: u32,
+    /// Persisted plan tasks for this session.
+    pub plan_tasks: Vec<PlanTask>,
+    /// Whether the plan panel was open when the session was last saved.
+    pub plan_panel_open: bool,
 }
 
 impl Session {
@@ -97,6 +101,8 @@ impl Session {
             working_directory,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            plan_tasks: Vec::new(),
+            plan_panel_open: false,
         }
     }
 }
