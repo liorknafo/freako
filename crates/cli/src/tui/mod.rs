@@ -56,6 +56,8 @@ const SHELL_COMPACT_HEAD_LINES: usize = 4;
 const SHELL_COMPACT_TAIL_LINES: usize = 4;
 const SHELL_CONSOLE_VISIBLE_LINES: usize = 10;
 const SHELL_CONSOLE_SCROLL_STEP: usize = 3;
+const MOUSE_SCROLL_FAST_MULTIPLIER: u16 = 3;
+const MOUSE_SCROLL_FAST_THRESHOLD_MS: u128 = 120;
 
 #[derive(Clone, Debug)]
 pub(super) struct LiveShellChunk {
@@ -161,6 +163,7 @@ struct App {
     tool_collapse_state: HashMap<String, bool>,
     /// Bumped on collapse/scroll toggle to invalidate chat cache.
     collapse_generation: u64,
+    last_mouse_scroll_at: Option<std::time::Instant>,
     /// Tool header screen regions for click-to-toggle (computed each frame).
     tool_header_regions: Vec<(String, Rect)>,
     /// Tool header line indices in chat_lines_cache (recorded during cache build).
@@ -252,12 +255,11 @@ fn reset_shell_console_state(app: &mut App) {
     app.shell_viewport = PendingShellViewport::default();
 }
 
-fn shell_output_for<'a>(app: &'a App, tool_call_id: &str) -> Option<&'a str> {
-    if app.live_shell_outputs.contains_key(tool_call_id) {
-        None
-    } else {
-        app.completed_shell_outputs.get(tool_call_id).map(|output| output.plain.as_str())
-    }
+fn shell_output_for(app: &App, tool_call_id: &str) -> Option<String> {
+    app.live_shell_outputs
+        .get(tool_call_id)
+        .map(|o| o.plain_text())
+        .or_else(|| app.completed_shell_outputs.get(tool_call_id).map(|o| o.plain.clone()))
 }
 
 fn sync_shell_viewport_target(app: &mut App) {
@@ -327,20 +329,32 @@ fn find_clicked_tool_header(app: &App, row: u16) -> Option<String> {
     None
 }
 
-/// Find a tool_call_id if the mouse is over a tool header region (for scrollable tools).
+/// Find a tool_call_id if the mouse is over a scrollable tool block.
 fn find_hovered_scrollable_tool(app: &App, column: u16, row: u16) -> Option<String> {
-    // Check tool header regions — tool body is below the header
+    // tool_header_regions stores only the header row. For scroll capture we need
+    // the full rendered tool block, so extend the region by the tool body's line count.
     for (tool_call_id, rect) in &app.tool_header_regions {
-        // The body region starts right after the header and extends some lines
-        // For simplicity, check if mouse is anywhere near the tool's area
-        if column >= rect.x && column < rect.x.saturating_add(rect.width)
+        let Some(view) = app.tool_views.get(tool_call_id) else {
+            continue;
+        };
+        if !view.is_scrollable() {
+            continue;
+        }
+
+        use ratatui::widgets::{Paragraph, Wrap};
+        let bubble_width = app.last_inner_width.saturating_sub(2);
+        let body = view.render_body(bubble_width);
+        let body_height = Paragraph::new(body)
+            .wrap(Wrap { trim: false })
+            .line_count(bubble_width) as u16;
+        let total_height = rect.height.saturating_add(body_height);
+
+        if column >= rect.x
+            && column < rect.x.saturating_add(rect.width)
             && row >= rect.y
+            && row < rect.y.saturating_add(total_height)
         {
-            if let Some(view) = app.tool_views.get(tool_call_id) {
-                if view.is_scrollable() {
-                    return Some(tool_call_id.clone());
-                }
-            }
+            return Some(tool_call_id.clone());
         }
     }
     None
@@ -359,8 +373,18 @@ fn scroll_hovered_shell(app: &mut App, delta: isize) -> bool {
     app.shell_viewport.tool_call_id = Some(tool_call_id);
     let current = app.shell_viewport.scroll_lines_from_bottom as isize;
     let next = (current + delta).clamp(0, max_offset as isize) as usize;
-    app.shell_viewport.scroll_lines_from_bottom = next;
+    app.shell_viewport.scroll_lines_from_bottom = next.min(max_offset);
     true
+}
+
+fn mouse_scroll_step(app: &mut App) -> u16 {
+    let now = std::time::Instant::now();
+    let step = match app.last_mouse_scroll_at {
+        Some(last) if now.duration_since(last).as_millis() <= MOUSE_SCROLL_FAST_THRESHOLD_MS => MOUSE_SCROLL_FAST_MULTIPLIER,
+        _ => 1,
+    };
+    app.last_mouse_scroll_at = Some(now);
+    step
 }
 
 fn populate_tool_views_from_session(app: &mut App) {
@@ -550,6 +574,7 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
         tool_views: HashMap::new(),
         tool_collapse_state: HashMap::new(),
         collapse_generation: 0,
+        last_mouse_scroll_at: None,
         tool_header_regions: Vec::new(),
         tool_header_line_indices: Vec::new(),
         tool_header_wrapped_positions: Vec::new(),
@@ -886,37 +911,39 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                             }
                         }
                         MouseEventKind::ScrollUp => {
+                            let step = mouse_scroll_step(&mut app);
                             // Try scrolling a hovered tool view first, fall back to chat scroll
                             let mut scrolled = false;
                             if let Some(hovered_id) = find_hovered_scrollable_tool(&app, mouse.column, mouse.row) {
                                 if let Some(view) = app.tool_views.get_mut(&hovered_id) {
                                     if view.is_scrollable() {
-                                        view.scroll(SHELL_CONSOLE_SCROLL_STEP as isize);
+                                        view.scroll((SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize);
                                         app.collapse_generation += 1;
                                         scrolled = true;
                                     }
                                 }
                             }
                             if !scrolled {
-                                if !scroll_hovered_shell(&mut app, SHELL_CONSOLE_SCROLL_STEP as isize) {
-                                    app.scroll_offset = app.scroll_offset.saturating_add(3);
+                                if !scroll_hovered_shell(&mut app, (SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize) {
+                                    app.scroll_offset = app.scroll_offset.saturating_add(step);
                                 }
                             }
                         }
                         MouseEventKind::ScrollDown => {
+                            let step = mouse_scroll_step(&mut app);
                             let mut scrolled = false;
                             if let Some(hovered_id) = find_hovered_scrollable_tool(&app, mouse.column, mouse.row) {
                                 if let Some(view) = app.tool_views.get_mut(&hovered_id) {
                                     if view.is_scrollable() {
-                                        view.scroll(-(SHELL_CONSOLE_SCROLL_STEP as isize));
+                                        view.scroll(-((SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize));
                                         app.collapse_generation += 1;
                                         scrolled = true;
                                     }
                                 }
                             }
                             if !scrolled {
-                                if !scroll_hovered_shell(&mut app, -(SHELL_CONSOLE_SCROLL_STEP as isize)) {
-                                    app.scroll_offset = app.scroll_offset.saturating_sub(3);
+                                if !scroll_hovered_shell(&mut app, -((SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize)) {
+                                    app.scroll_offset = app.scroll_offset.saturating_sub(step);
                                 }
                             }
                         }
@@ -1078,7 +1105,7 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                             tool_call_id.clone(),
                             CompletedShellOutput {
                                 plain: plain.clone(),
-                                compacted: compacted.clone(),
+                                compacted,
                                 chunks,
                             },
                         );
@@ -1103,7 +1130,7 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                             tool_call_id: tool_call_id.clone(),
                             name: name.clone(),
                             content: if let Some(completed) = app.completed_shell_outputs.get(&tool_call_id) {
-                                completed.compacted.clone()
+                                completed.plain.clone()
                             } else {
                                 content.clone()
                             },
