@@ -11,9 +11,9 @@ use super::message::{
 };
 use super::{
     App, InputMode, PendingApproval, ASSISTANT_STYLE, CHAT_BG, CODE_BLOCK_BG, INPUT_BG,
-    INPUT_CURSOR_STYLE, MUTED_STYLE, PendingShellViewport, SELECTED_BG, SHELL_CONSOLE_BG,
-    SHELL_CONSOLE_BORDER, SHELL_CONSOLE_FG, SHELL_CONSOLE_VISIBLE_LINES, SIDEBAR_BG,
-    SPINNER_FRAMES, THINKING_STYLE, TOOL_STYLE,
+    INPUT_CURSOR_STYLE, INPUT_HINT_STYLE, MUTED_STYLE, PendingShellViewport, SELECTED_BG,
+    SHELL_CONSOLE_BG, SHELL_CONSOLE_BORDER, SHELL_CONSOLE_FG, SHELL_CONSOLE_VISIBLE_LINES,
+    SIDEBAR_BG, SPINNER_FRAMES, THINKING_STYLE, TOOL_STYLE,
 };
 
 fn approval_options(_kind: super::ApprovalKind) -> &'static [&'static str] {
@@ -288,12 +288,19 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
         } else {
             format!("{} │ 📎 {} image(s) attached (Alt+V to add more)", input_title, app.pending_images.len())
         };
-        let input_block = Block::default().borders(Borders::NONE).title(title_with_images).style(Style::new().bg(INPUT_BG));
+        let input_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(main_chunks[2]);
+        let input_hint = Paragraph::new(title_with_images)
+            .style(Style::new().fg(Color::Black).bg(Color::White));
+        frame.render_widget(input_hint, input_chunks[0]);
+        let input_block = Block::default().borders(Borders::NONE).style(Style::new().bg(INPUT_BG));
         let input = Paragraph::new(app.input.as_str()).style(Style::new().bg(INPUT_BG)).block(input_block).wrap(Wrap { trim: false });
-        frame.render_widget(input, main_chunks[2]);
+        frame.render_widget(input, input_chunks[1]);
 
         if matches!(app.input_mode, InputMode::Editing) {
-            let inner_w = main_chunks[2].width.saturating_sub(2).max(1) as usize;
+            let inner_w = input_chunks[1].width.max(1) as usize;
             let mut cursor_row: u16 = 0;
             let mut cursor_col: u16 = 0;
             for (i, line) in app.input.split('\n').enumerate() {
@@ -305,10 +312,10 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
                 cursor_row += wrapped_rows as u16;
                 cursor_col = (chars % inner_w) as u16;
             }
-            let cx = main_chunks[2].x + 1 + cursor_col;
-            let cy = main_chunks[2].y + 1 + cursor_row;
-            let max_y = main_chunks[2].y + main_chunks[2].height.saturating_sub(2);
-            if cx < main_chunks[2].x + main_chunks[2].width.saturating_sub(1) && cy <= max_y {
+            let cx = input_chunks[1].x + cursor_col;
+            let cy = input_chunks[1].y + cursor_row;
+            let max_y = input_chunks[1].y + input_chunks[1].height.saturating_sub(1);
+            if cx < input_chunks[1].x + input_chunks[1].width && cy <= max_y {
                 frame.render_widget(Paragraph::new(" ").style(INPUT_CURSOR_STYLE), Rect { x: cx, y: cy, width: 1, height: 1 });
             }
         }
@@ -466,6 +473,8 @@ fn render_streaming_markdown(text: &str, spinner: &str, width: u16) -> Vec<Line<
     lines
 }
 
+/// Returns (lines, sub_agent_header_indices) where header indices are relative
+/// to the start of the returned lines vec.
 fn render_streaming_tools(app: &mut App, spinner: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     lines.push(Line::styled(format!("{} Tools:", spinner), TOOL_STYLE.add_modifier(Modifier::BOLD)));
@@ -474,9 +483,20 @@ fn render_streaming_tools(app: &mut App, spinner: &str) -> Vec<Line<'static>> {
     for (id, name, args) in streaming_calls {
         let (title, summary) = format_tool_presentation(&name, &args)
             .unwrap_or_else(|| (name.clone().into(), fallback_tool_summary(&name, &args)));
-        let status = if app.live_shell_outputs.contains_key(&id) { "running…" } else { "queued…" };
-        lines.push(Line::styled(format!("  • {} – {} – {}", title, summary, status), TOOL_STYLE));
-        if name == "shell" {
+
+        if name == "sub_agent" {
+            // Always render expanded while streaming — no collapse toggle needed
+            if let Some(view) = app.tool_views.get(&id) {
+                let inner_width = app.last_inner_width.max(40);
+                // Always show uncollapsed (false) while streaming
+                lines.extend(super::tools::render_tool(view.as_ref(), false, inner_width));
+            } else {
+                let status = "starting…";
+                lines.push(Line::styled(format!("  • {} – {} – {}", title, summary, status), TOOL_STYLE));
+            }
+        } else if name == "shell" {
+            let status = if app.live_shell_outputs.contains_key(&id) { "running…" } else { "queued…" };
+            lines.push(Line::styled(format!("  • {} – {} – {}", title, summary, status), TOOL_STYLE));
             if let Some(output) = app.live_shell_outputs.get(&id).cloned() {
                 let viewport = app.shell_viewport.clone();
                 lines.extend(render_shell_console_lines(
@@ -489,6 +509,9 @@ fn render_streaming_tools(app: &mut App, spinner: &str) -> Vec<Line<'static>> {
                     SHELL_CONSOLE_VISIBLE_LINES,
                 ));
             }
+        } else {
+            let status = if app.live_shell_outputs.contains_key(&id) { "running…" } else { "queued…" };
+            lines.push(Line::styled(format!("  • {} – {} – {}", title, summary, status), TOOL_STYLE));
         }
     }
 

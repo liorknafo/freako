@@ -9,6 +9,9 @@ pub struct PendingApproval {
     pub tool_name: String,
     pub arguments: serde_json::Value,
     pub expanded: bool,
+    /// If set, this approval is for a tool inside a sub-agent, and the response
+    /// should be routed through the sub-agent's approval channel.
+    pub sub_agent_parent: Option<String>,
 }
 
 pub fn view(approval: &PendingApproval) -> Element<'_, Message> {

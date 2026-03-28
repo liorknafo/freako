@@ -78,6 +78,8 @@ pub enum ToolCall {
     },
     #[serde(rename = "delete_memory")]
     DeleteMemory { id: String },
+    #[serde(rename = "sub_agent")]
+    SubAgent { task: String },
 }
 
 fn default_dot() -> String { ".".to_string() }
@@ -121,6 +123,7 @@ impl ToolPresentation for ToolCall {
             Self::ReadMemory { id } => id.clone(),
             Self::WriteMemory { title, .. } => title.clone(),
             Self::DeleteMemory { id } => id.clone(),
+            Self::SubAgent { task } => truncate(task, 60),
             Self::ListSkills => "skills".to_string(),
             Self::EnterPlanMode => "switching to plan mode".to_string(),
             Self::EditPlan { .. } => "updating plan".to_string(),
@@ -152,6 +155,7 @@ impl ToolCall {
             Self::ReadMemory { .. } => "read_memory",
             Self::WriteMemory { .. } => "write_memory",
             Self::DeleteMemory { .. } => "delete_memory",
+            Self::SubAgent { .. } => "sub_agent",
         }
     }
 
@@ -212,6 +216,9 @@ impl ToolCall {
             "delete_memory" => serde_json::from_value::<DeleteMemoryArgs>(arguments.clone())
                 .map(|a| Self::DeleteMemory { id: a.id })
                 .ok(),
+            "sub_agent" => serde_json::from_value::<SubAgentArgs>(arguments.clone())
+                .map(|a| Self::SubAgent { task: a.task })
+                .ok(),
             _ => None,
         };
         result
@@ -270,3 +277,4 @@ fn truncate(s: &str, max: usize) -> String {
 #[derive(Deserialize)] struct ReadMemoryArgs { id: String }
 #[derive(Deserialize)] struct WriteMemoryArgs { title: String, content: String, #[serde(default)] scope: Option<String>, #[serde(default)] id: Option<String> }
 #[derive(Deserialize)] struct DeleteMemoryArgs { id: String }
+#[derive(Deserialize)] struct SubAgentArgs { task: String }

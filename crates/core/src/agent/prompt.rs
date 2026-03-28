@@ -57,6 +57,7 @@ You have access to the following tools:
 - Use read_file before editing — understand code before changing it.
 - For shell commands, prefer specific commands over broad ones. Be mindful of the working directory.
 - Tools that modify files or run commands require user approval. Respect denied approvals and adjust your approach.
+- **Delegate bulk reads to sub-agents.** When you need to read multiple files to understand a feature, explore a module, or gather context, spawn a sub_agent to do the reading and return a summary. This keeps your context window lean. Only read files directly when you need the full content for editing or a single targeted lookup.
 
 ## Safety
 - Never overwrite files without understanding their contents first.
@@ -87,6 +88,24 @@ Your job is to:
 9. Do NOT execute any file changes until the user explicitly approves the plan and switches back to execute mode.
 "#;
 
+/// Capability description for the sub_agent tool, appended only in the main agent prompt.
+pub const SUB_AGENT_TOOL_PROMPT: &str = r#"- **sub_agent**: Spawn a sub-agent to handle a well-defined subtask independently. The sub-agent has access to all tools except sub_agent. Use for: exploring parts of the codebase, performing small focused refactors, researching a specific question. The sub-agent returns a summary of its findings/actions. You can call multiple sub_agents in parallel — they share the same approval state, so tools approved once are approved for all agents.
+"#;
+
+/// System prompt addendum injected for sub-agents.
+pub const SUB_AGENT_MODE_PROMPT: &str = r#"
+# Sub-Agent Mode
+
+You are operating as a **sub-agent** spawned by a parent agent. Your job is to complete the specific task described in the user message and return a clear, useful summary of your findings or actions.
+
+Guidelines:
+- Focus exclusively on the task given. Don't ask follow-up questions — do your best with the information provided.
+- Use tools (read_file, grep, glob, list_dir, etc.) to gather information.
+- After completing your work, write a clear summary of what you found or did. This summary is ALL the parent agent will see.
+- Be thorough but concise. Include file paths, line numbers, and key details.
+- You do NOT have the sub_agent tool — you cannot spawn further sub-agents.
+"#;
+
 /// Tool available in execute mode when the agent decides it should stop editing
 /// and continue in read-only planning mode.
 pub const ENTER_PLAN_MODE_TOOL_PROMPT: &str = r#"
@@ -106,12 +125,40 @@ pub async fn build_system_prompt(
     plan_mode: bool,
     config: &crate::config::types::AppConfig,
 ) -> String {
+    build_system_prompt_inner(custom_prompt, working_dir, model_id, plan_mode, false, config).await
+}
+
+/// Build system prompt for sub-agents (no sub_agent tool, no plan mode).
+pub async fn build_sub_agent_system_prompt(
+    custom_prompt: Option<&str>,
+    working_dir: &str,
+    model_id: &str,
+    config: &crate::config::types::AppConfig,
+) -> String {
+    build_system_prompt_inner(custom_prompt, working_dir, model_id, false, true, config).await
+}
+
+async fn build_system_prompt_inner(
+    custom_prompt: Option<&str>,
+    working_dir: &str,
+    model_id: &str,
+    plan_mode: bool,
+    is_sub_agent: bool,
+    config: &crate::config::types::AppConfig,
+) -> String {
     let mut prompt = SYSTEM_PROMPT.to_string();
 
-    if plan_mode {
-        prompt.push_str(PLAN_MODE_PROMPT);
+    if is_sub_agent {
+        prompt.push_str(SUB_AGENT_MODE_PROMPT);
     } else {
-        prompt.push_str(ENTER_PLAN_MODE_TOOL_PROMPT);
+        // Only the main agent gets the sub_agent tool description
+        prompt.push_str(SUB_AGENT_TOOL_PROMPT);
+
+        if plan_mode {
+            prompt.push_str(PLAN_MODE_PROMPT);
+        } else {
+            prompt.push_str(ENTER_PLAN_MODE_TOOL_PROMPT);
+        }
     }
 
     prompt.push_str(&format!(

@@ -6,6 +6,7 @@ mod tools;
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use crossterm::{
@@ -14,7 +15,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use ratatui::prelude::*;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use freako_core::agent::events::{AgentEvent, ToolOutputStream};
 use freako_core::agent::loop_::{run_agent_loop, ApprovalResponse};
@@ -29,6 +30,7 @@ const ASSISTANT_STYLE: Style = Style::new().fg(Color::Indexed(252));
 const TOOL_STYLE: Style = Style::new().fg(Color::Indexed(180));
 const SYSTEM_STYLE: Style = Style::new().fg(Color::Indexed(145));
 const INPUT_CURSOR_STYLE: Style = Style::new().bg(Color::Indexed(240)).fg(Color::White);
+const INPUT_HINT_STYLE: Style = Style::new().fg(Color::Black).bg(Color::White);
 const CHAT_BG: Color = Color::Rgb(18, 18, 20);
 const INPUT_BG: Color = Color::Rgb(24, 24, 27);
 const APPROVAL_BG: Color = Color::Rgb(30, 30, 34);
@@ -195,6 +197,10 @@ struct App {
     chat_cache_width: u16,
     /// The collapse generation when the cache was built.
     chat_cache_collapse_gen: u64,
+    /// Shared approval senders for sub-agents
+    sub_agent_approval_senders: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<ApprovalResponse>>>>,
+    /// Parent tool_call_id when a sub-agent approval is pending
+    sub_agent_pending_parent: Option<String>,
 }
 
 fn approval_options(_kind: ApprovalKind) -> &'static [&'static str] {
@@ -216,6 +222,27 @@ fn build_approval_response(kind: ApprovalKind, cursor: usize) -> ApprovalRespons
         "Approve for Session" => ApprovalResponse::ApproveForSession,
         "Always Approve" => ApprovalResponse::ApproveAlways,
         _ => ApprovalResponse::Deny,
+    }
+}
+
+/// Route an approval response to the main agent or a sub-agent.
+fn send_approval_response(
+    main_tx: &mpsc::UnboundedSender<ApprovalResponse>,
+    sub_senders: &Arc<Mutex<HashMap<String, mpsc::UnboundedSender<ApprovalResponse>>>>,
+    sub_agent_parent: &Option<String>,
+    response: ApprovalResponse,
+) {
+    if let Some(parent_id) = sub_agent_parent {
+        let senders = sub_senders.clone();
+        let parent_id = parent_id.clone();
+        tokio::spawn(async move {
+            let senders = senders.lock().await;
+            if let Some(tx) = senders.get(&parent_id) {
+                let _ = tx.send(response);
+            }
+        });
+    } else {
+        let _ = main_tx.send(response);
     }
 }
 
@@ -343,10 +370,10 @@ fn find_clicked_tool_header(app: &App, row: u16) -> Option<String> {
     None
 }
 
-/// Find a tool_call_id if the mouse is over a scrollable tool block.
+/// Find a tool_call_id if the mouse is over a scrollable tool's content area.
+/// For sub-agent views, only matches the inner content lines (between ┌ and └),
+/// not the tool header, box header, or box footer — so chat scroll works elsewhere.
 fn find_hovered_scrollable_tool(app: &App, column: u16, row: u16) -> Option<String> {
-    // tool_header_regions stores only the header row. For scroll capture we need
-    // the full rendered tool block, so extend the region by the tool body's line count.
     for (tool_call_id, rect) in &app.tool_header_regions {
         let Some(view) = app.tool_views.get(tool_call_id) else {
             continue;
@@ -354,19 +381,39 @@ fn find_hovered_scrollable_tool(app: &App, column: u16, row: u16) -> Option<Stri
         if !view.is_scrollable() {
             continue;
         }
+        // Skip collapsed views — no body is rendered on screen
+        let collapsed = app.tool_collapse_state.get(tool_call_id).copied()
+            .unwrap_or_else(|| view.default_collapsed());
+        if collapsed {
+            continue;
+        }
 
         use ratatui::widgets::{Paragraph, Wrap};
         let bubble_width = app.last_inner_width.saturating_sub(2);
-        let body = view.render_body(bubble_width);
-        let body_height = Paragraph::new(body)
+        let body_lines = view.render_body(bubble_width);
+        let body_line_count = body_lines.len();
+        let body_height = Paragraph::new(body_lines)
             .wrap(Wrap { trim: false })
             .line_count(bubble_width) as u16;
-        let total_height = rect.height.saturating_add(body_height);
+
+        // body starts after the tool header (▼ line)
+        let body_y = rect.y.saturating_add(rect.height);
+
+        // For views with a box border (header ┌ + content + footer └),
+        // skip the first and last lines of the body so only the inner
+        // content area captures scroll. This lets chat scroll work on
+        // the tool header, box header, and box footer.
+        let (content_y, content_height) = if body_line_count >= 3 {
+            // Skip ┌ header (1 line) and └ footer (1 line)
+            (body_y + 1, body_height.saturating_sub(2))
+        } else {
+            (body_y, body_height)
+        };
 
         if column >= rect.x
             && column < rect.x.saturating_add(rect.width)
-            && row >= rect.y
-            && row < rect.y.saturating_add(total_height)
+            && row >= content_y
+            && row < content_y.saturating_add(content_height)
         {
             return Some(tool_call_id.clone());
         }
@@ -459,9 +506,10 @@ fn start_agent(app: &mut App, config: AppConfig) {
     app.queued_message_tx = Some(queued_message_tx);
 
     let mut session = app.session.clone();
+    let sub_agent_senders = app.sub_agent_approval_senders.clone();
 
     tokio::spawn(async move {
-        run_agent_loop(config, &mut session, event_tx, approval_rx, cancel_rx, queued_message_rx).await;
+        run_agent_loop(config, &mut session, event_tx, approval_rx, cancel_rx, queued_message_rx, sub_agent_senders).await;
     });
 }
 
@@ -610,6 +658,8 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
         chat_cache_msg_count: 0,
         chat_cache_width: 0,
         chat_cache_collapse_gen: 0,
+        sub_agent_approval_senders: Arc::new(Mutex::new(HashMap::new())),
+        sub_agent_pending_parent: None,
     };
 
     load_session_list(&mut app);
@@ -627,13 +677,15 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                                 KeyCode::Right | KeyCode::Tab => app.approval_cursor = next_approval_cursor(pending.kind, app.approval_cursor),
                                 KeyCode::Enter => {
                                     let response = build_approval_response(pending.kind, app.approval_cursor);
-                                    let _ = app.approval_tx.send(response);
+                                    send_approval_response(&app.approval_tx, &app.sub_agent_approval_senders, &app.sub_agent_pending_parent, response);
                                     app.pending_approval = None;
+                                    app.sub_agent_pending_parent = None;
                                     app.input_mode = InputMode::Editing;
                                 }
                                 KeyCode::Esc => {
-                                    let _ = app.approval_tx.send(ApprovalResponse::Deny);
+                                    send_approval_response(&app.approval_tx, &app.sub_agent_approval_senders, &app.sub_agent_pending_parent, ApprovalResponse::Deny);
                                     app.pending_approval = None;
+                                    app.sub_agent_pending_parent = None;
                                     app.input_mode = InputMode::Editing;
                                 }
                                 _ => {}
@@ -1092,6 +1144,34 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                     app.is_thinking = true;
                     app.status_message = "Thinking…".into();
                 }
+                AgentEvent::SubAgentEvent { parent_tool_call_id, event } => {
+                    // Forward nested events to the sub-agent's tool view
+                    if let Some(view) = app.tool_views.get_mut(&parent_tool_call_id) {
+                        view.push_nested_event(&event);
+                    }
+
+                    // Handle nested approval — route to sub-agent channel
+                    if let AgentEvent::ToolApprovalNeeded { name, arguments, .. } = *event.clone() {
+                        let args_json = serde_json::to_string_pretty(&arguments)
+                            .unwrap_or_default();
+                        let kind = match name.as_str() {
+                            "shell" => ApprovalKind::Shell,
+                            _ => ApprovalKind::File,
+                        };
+                        app.pending_approval = Some(PendingApproval {
+                            tool_name: name,
+                            args_json,
+                            kind,
+                        });
+                        // Store parent ID so approval response routes correctly
+                        app.sub_agent_pending_parent = Some(parent_tool_call_id);
+                        app.input_mode = InputMode::WaitingApproval;
+                        app.approval_cursor = 0;
+                    }
+
+                    // Invalidate cache on any event that changes the sub-agent view content
+                    app.collapse_generation += 1;
+                }
                 AgentEvent::Compacting => {
                     app.is_thinking = true;
                     app.current_tool = Some("Compacting context...".to_string());
@@ -1120,9 +1200,18 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
 
                     // Create tool view if not already present
                     if !app.tool_views.contains_key(&tool_call_id) {
+                        // Look up args from streaming_tool_calls first, then from session messages
                         let args = app.streaming_tool_calls.iter()
                             .find(|(id, _, _)| id == &tool_call_id)
                             .map(|(_, _, a)| a.clone())
+                            .or_else(|| {
+                                // streaming_tool_calls may have been flushed already — search session messages
+                                app.session.messages.iter().rev().flat_map(|m| &m.parts).find_map(|p| {
+                                    if let MessagePart::ToolCall { id, arguments, .. } = p {
+                                        if id == &tool_call_id { Some(arguments.clone()) } else { None }
+                                    } else { None }
+                                })
+                            })
                             .unwrap_or(serde_json::Value::Object(Default::default()));
                         if let Some(tool_call) = freako_core::tools::tool_name::ToolCall::from_raw(&name, &args) {
                             let view = tools::create_tool_view(tool_call_id.clone(), tool_call);
@@ -1131,6 +1220,8 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                                 app.tool_collapse_state.insert(tool_call_id.clone(), default);
                             }
                             app.tool_views.insert(tool_call_id.clone(), view);
+                            // Invalidate cache so the chat re-renders with the proper tool view
+                            app.collapse_generation += 1;
                         }
                     }
 

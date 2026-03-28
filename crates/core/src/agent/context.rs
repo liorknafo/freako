@@ -309,11 +309,21 @@ fn convert_message(msg: &ConversationMessage) -> LLMMessage {
                 name: name.clone(),
                 arguments: arguments.clone(),
             },
-            MessagePart::ToolResult { tool_call_id, content, is_error, .. } => LLMContent::ToolResult {
-                tool_call_id: tool_call_id.clone(),
-                content: content.clone(),
-                is_error: *is_error,
-            },
+            MessagePart::ToolResult { tool_call_id, name, content, is_error, .. } => {
+                // For sub_agent results, extract just the summary for the LLM
+                let llm_content = if name == "sub_agent" {
+                    serde_json::from_str::<crate::tools::sub_agent::SubAgentResult>(content)
+                        .map(|r| r.summary)
+                        .unwrap_or_else(|_| content.clone())
+                } else {
+                    content.clone()
+                };
+                LLMContent::ToolResult {
+                    tool_call_id: tool_call_id.clone(),
+                    content: llm_content,
+                    is_error: *is_error,
+                }
+            }
             MessagePart::ToolOutput { .. } => LLMContent::Text(String::new()),
         })
         .collect();
