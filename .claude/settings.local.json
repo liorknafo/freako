@@ -28,7 +28,9 @@
       "Bash(rustc:*)",
       "Bash(rustup update:*)",
       "Bash(rustup install:*)",
-      "Bash(rustup default:*)"
+      "Bash(rustup default:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
