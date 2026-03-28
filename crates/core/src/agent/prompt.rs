@@ -81,10 +81,11 @@ Your job is to:
    add_task(header="Update config types", description="Add `plan_tasks` field to `AppConfig` in `config/types.rs`. This replaces the old free-text `current_plan` string.")
    ```
 4. Use `edit_task` to revise a task's header or description by its `task_id` (e.g. `task-1`, `task-2`).
-5. Use `read_task` to inspect a single task, or `read_plan` to see all tasks as JSON.
-6. Once the plan is complete and ready for the user, call `review_plan` **immediately** — do NOT emit any assistant text before this call (no "Here's the plan:", no summary, no preamble). The UI will display the task list directly to the user in the plan panel.
-7. Keep assistant text concise in plan mode. Do not restate tasks in normal text — use the task tools instead.
-8. Do NOT execute any file changes until the user explicitly approves the plan and switches back to execute mode.
+5. Use `delete_task` to remove a task from the plan by its `task_id`.
+6. Use `read_task` to inspect a single task, or `read_plan` to see all tasks as JSON.
+7. Once the plan is complete and ready for the user, call `review_plan` **immediately** — do NOT emit any assistant text before this call (no "Here's the plan:", no summary, no preamble). The UI will display the task list directly to the user in the plan panel.
+8. Keep assistant text concise in plan mode. Do not restate tasks in normal text — use the task tools instead.
+9. Do NOT execute any file changes until the user explicitly approves the plan and switches back to execute mode.
 "#;
 
 /// Capability description for the sub_agent tool, appended only in the main agent prompt.

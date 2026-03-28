@@ -10,6 +10,7 @@ pub mod list_skills;
 pub mod enter_plan_mode;
 pub mod add_task;
 pub mod edit_task;
+pub mod delete_task;
 pub mod read_task;
 pub mod update_task_status;
 pub mod read_plan;
@@ -146,6 +147,7 @@ impl ToolRegistry {
         }));
         registry.register(Box::new(add_task::AddTaskTool));
         registry.register(Box::new(edit_task::EditTaskTool));
+        registry.register(Box::new(delete_task::DeleteTaskTool));
         registry.register(Box::new(read_task::ReadTaskTool));
         registry.register(Box::new(read_plan::ReadPlanTool));
         registry.register(Box::new(review_plan::ReviewPlanTool));

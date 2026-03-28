@@ -131,6 +131,16 @@ struct App {
     streaming_tool_calls: Vec<(String, String, serde_json::Value)>,
     current_tool: Option<String>,
     plan_tasks: Vec<freako_core::agent::events::PlanTask>,
+    plan_task_expanded: std::collections::HashSet<String>,
+    plan_selected_task: usize,
+    plan_focused: bool,
+    /// Screen rows for plan task headers (task_id, y). Built each frame by render.
+    plan_task_header_rows: Vec<(String, u16)>,
+    plan_scroll_offset: u16,
+    plan_panel_hidden: bool,
+    /// Screen rects for chat area and plan panel, set each frame by render.
+    chat_area_rect: Rect,
+    plan_panel_rect: Rect,
     tool_output_buffer: String,
     live_shell_outputs: HashMap<String, LiveShellOutput>,
     completed_shell_outputs: HashMap<String, CompletedShellOutput>,
@@ -266,6 +276,10 @@ fn load_session(app: &mut App, session_id: &str) {
             app.hovered_shell_tool_call_id = None;
             app.shell_mouse_regions.clear();
             app.shell_viewport = PendingShellViewport::default();
+            app.plan_tasks = app.session.plan_tasks.clone();
+            app.plan_task_expanded.clear();
+            app.plan_selected_task = 0;
+            app.plan_focused = false;
             populate_tool_views_from_session(app);
         }
     }
@@ -536,6 +550,7 @@ fn save_session(app: &mut App) {
         app.session.title = title;
     }
     app.session.updated_at = chrono::Utc::now();
+    app.session.plan_panel_open = !app.plan_tasks.is_empty();
     if let Some(store) = &app.store {
         let _ = store.save_session(&app.session);
     }
@@ -594,6 +609,14 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
         streaming_tool_calls: Vec::new(),
         current_tool: None,
         plan_tasks: Vec::new(),
+        plan_task_expanded: std::collections::HashSet::new(),
+        plan_selected_task: 0,
+        plan_focused: false,
+        plan_task_header_rows: Vec::new(),
+        plan_scroll_offset: 0,
+        plan_panel_hidden: false,
+        chat_area_rect: Rect::default(),
+        plan_panel_rect: Rect::default(),
         tool_output_buffer: String::new(),
         live_shell_outputs: HashMap::new(),
         completed_shell_outputs: HashMap::new(),
@@ -672,6 +695,7 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                         KeyCode::Char('q') => break,
                         KeyCode::Char('i') | KeyCode::Char('e') => app.input_mode = InputMode::Editing,
                         KeyCode::Char('n') => {
+                            save_session(&mut app);
                             app.session = Session::new(app.session.working_directory.clone());
                             app.messages.clear();
                             app.streaming_text.clear();
@@ -680,6 +704,11 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                             reset_shell_console_state(&mut app);
                             app.tool_views.clear();
                             app.tool_collapse_state.clear();
+                            app.plan_tasks.clear();
+                            app.plan_task_expanded.clear();
+                            app.plan_selected_task = 0;
+                            app.plan_focused = false;
+                            app.plan_pending_review = false;
                         }
                         KeyCode::Char('l') => {
                             load_session_list(&mut app);
@@ -688,6 +717,9 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                         KeyCode::Char('p') => {
                             app.config.plan_mode = !app.config.plan_mode;
                             let _ = freako_core::config::save_config(&app.config);
+                        }
+                        KeyCode::Char('h') if !app.plan_tasks.is_empty() => {
+                            app.plan_panel_hidden = !app.plan_panel_hidden;
                         }
                         KeyCode::Char('o') => {
                             app.input_mode = InputMode::Settings;
@@ -760,6 +792,35 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                                 }
                             }
                         }
+                        KeyCode::Char('f') if !app.selecting_session && !app.plan_tasks.is_empty() => {
+                            app.plan_focused = !app.plan_focused;
+                            if app.plan_focused {
+                                app.plan_selected_task = 0;
+                            }
+                        }
+                        KeyCode::Esc if app.plan_focused => {
+                            app.plan_focused = false;
+                        }
+                        KeyCode::Up if app.plan_focused => {
+                            if app.plan_selected_task > 0 {
+                                app.plan_selected_task -= 1;
+                            }
+                        }
+                        KeyCode::Down if app.plan_focused => {
+                            if app.plan_selected_task + 1 < app.plan_tasks.len() {
+                                app.plan_selected_task += 1;
+                            }
+                        }
+                        KeyCode::Enter | KeyCode::Char(' ') if app.plan_focused => {
+                            if let Some(task) = app.plan_tasks.get(app.plan_selected_task) {
+                                let id = task.id.clone();
+                                if app.plan_task_expanded.contains(&id) {
+                                    app.plan_task_expanded.remove(&id);
+                                } else {
+                                    app.plan_task_expanded.insert(id);
+                                }
+                            }
+                        }
                         KeyCode::Up if !app.selecting_session => app.scroll_offset = app.scroll_offset.saturating_add(1),
                         KeyCode::Down if !app.selecting_session => app.scroll_offset = app.scroll_offset.saturating_sub(1),
                         KeyCode::PageUp => app.scroll_offset = app.scroll_offset.saturating_add(10),
@@ -779,6 +840,7 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                             let has_images = !app.pending_images.is_empty();
                             if app.plan_pending_review {
                                 app.plan_pending_review = false;
+                                app.plan_task_expanded.clear(); // Collapse all tasks in execute mode
                                 if text.is_empty() {
                                     app.config.plan_mode = false;
                                     let _ = freako_core::config::save_config(&app.config);
@@ -934,7 +996,17 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                     match mouse.kind {
                         MouseEventKind::Moved => {}
                         MouseEventKind::Down(MouseButton::Left) => {
-                            if let Some(tool_call_id) = find_clicked_tool_header(&app, mouse.row) {
+                            // Check plan task header clicks first
+                            if let Some(task_id) = app.plan_task_header_rows.iter()
+                                .find(|(_, y)| *y == mouse.row)
+                                .map(|(id, _)| id.clone())
+                            {
+                                if app.plan_task_expanded.contains(&task_id) {
+                                    app.plan_task_expanded.remove(&task_id);
+                                } else {
+                                    app.plan_task_expanded.insert(task_id);
+                                }
+                            } else if let Some(tool_call_id) = find_clicked_tool_header(&app, mouse.row) {
                                 let was_collapsed = app.tool_collapse_state.get(&tool_call_id).copied().unwrap_or(true);
                                 // Measure body lines to adjust scroll
                                 let body_visual_lines = if let Some(view) = app.tool_views.get(&tool_call_id) {
@@ -962,39 +1034,57 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                             }
                         }
                         MouseEventKind::ScrollUp => {
-                            let step = mouse_scroll_step(&mut app);
-                            // Try scrolling a hovered tool view first, fall back to chat scroll
-                            let mut scrolled = false;
-                            if let Some(hovered_id) = find_hovered_scrollable_tool(&app, mouse.column, mouse.row) {
-                                if let Some(view) = app.tool_views.get_mut(&hovered_id) {
-                                    if view.is_scrollable() {
-                                        view.scroll((SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize);
-                                        app.collapse_generation += 1;
-                                        scrolled = true;
+                            let in_plan = app.plan_panel_rect.width > 0
+                                && mouse.column >= app.plan_panel_rect.x
+                                && mouse.column < app.plan_panel_rect.x + app.plan_panel_rect.width
+                                && mouse.row >= app.plan_panel_rect.y
+                                && mouse.row < app.plan_panel_rect.y + app.plan_panel_rect.height;
+                            if in_plan {
+                                app.plan_scroll_offset = app.plan_scroll_offset.saturating_sub(3);
+                            } else {
+                                let step = mouse_scroll_step(&mut app);
+                                // Try scrolling a hovered tool view first, fall back to chat scroll
+                                let mut scrolled = false;
+                                if let Some(hovered_id) = find_hovered_scrollable_tool(&app, mouse.column, mouse.row) {
+                                    if let Some(view) = app.tool_views.get_mut(&hovered_id) {
+                                        if view.is_scrollable() {
+                                            view.scroll((SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize);
+                                            app.collapse_generation += 1;
+                                            scrolled = true;
+                                        }
                                     }
                                 }
-                            }
-                            if !scrolled {
-                                if !scroll_hovered_shell(&mut app, (SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize) {
-                                    app.scroll_offset = app.scroll_offset.saturating_add(step);
+                                if !scrolled {
+                                    if !scroll_hovered_shell(&mut app, (SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize) {
+                                        app.scroll_offset = app.scroll_offset.saturating_add(step);
+                                    }
                                 }
                             }
                         }
                         MouseEventKind::ScrollDown => {
-                            let step = mouse_scroll_step(&mut app);
-                            let mut scrolled = false;
-                            if let Some(hovered_id) = find_hovered_scrollable_tool(&app, mouse.column, mouse.row) {
-                                if let Some(view) = app.tool_views.get_mut(&hovered_id) {
-                                    if view.is_scrollable() {
-                                        view.scroll(-((SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize));
-                                        app.collapse_generation += 1;
-                                        scrolled = true;
+                            let in_plan = app.plan_panel_rect.width > 0
+                                && mouse.column >= app.plan_panel_rect.x
+                                && mouse.column < app.plan_panel_rect.x + app.plan_panel_rect.width
+                                && mouse.row >= app.plan_panel_rect.y
+                                && mouse.row < app.plan_panel_rect.y + app.plan_panel_rect.height;
+                            if in_plan {
+                                app.plan_scroll_offset = app.plan_scroll_offset.saturating_add(3);
+                            } else {
+                                let step = mouse_scroll_step(&mut app);
+                                let mut scrolled = false;
+                                if let Some(hovered_id) = find_hovered_scrollable_tool(&app, mouse.column, mouse.row) {
+                                    if let Some(view) = app.tool_views.get_mut(&hovered_id) {
+                                        if view.is_scrollable() {
+                                            view.scroll(-((SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize));
+                                            app.collapse_generation += 1;
+                                            scrolled = true;
+                                        }
                                     }
                                 }
-                            }
-                            if !scrolled {
-                                if !scroll_hovered_shell(&mut app, -((SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize)) {
-                                    app.scroll_offset = app.scroll_offset.saturating_sub(step);
+                                if !scrolled {
+                                    if !scroll_hovered_shell(&mut app, -((SHELL_CONSOLE_SCROLL_STEP as u16 * step) as isize)) {
+                                        app.scroll_offset = app.scroll_offset.saturating_sub(step);
+                                    }
                                 }
                             }
                         }
@@ -1275,15 +1365,22 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                 }
                 AgentEvent::EnteredPlanMode => app.config.plan_mode = true,
                 AgentEvent::PlanUpdated { tasks } => {
-                    app.plan_tasks = tasks;
+                    app.plan_tasks = tasks.clone();
+                    app.session.plan_tasks = tasks;
+                    app.plan_panel_hidden = false;
                 }
                 AgentEvent::PlanReadyForReview { tasks } => {
-                    app.plan_tasks = tasks;
+                    app.plan_tasks = tasks.clone();
+                    app.session.plan_tasks = tasks;
                     app.plan_pending_review = true;
+                    app.plan_panel_hidden = false;
+                    // Expand all tasks for review
+                    app.plan_task_expanded = app.plan_tasks.iter().map(|t| t.id.clone()).collect();
                     app.status_message = "Plan ready — Enter to approve".into();
                 }
                 AgentEvent::PlanTaskStatusChanged { tasks } => {
-                    app.plan_tasks = tasks;
+                    app.plan_tasks = tasks.clone();
+                    app.session.plan_tasks = tasks;
                 }
                 AgentEvent::QueuedMessageInjected => {}
             }

@@ -466,6 +466,8 @@ impl App {
             self.session.title = title;
         }
         self.session.updated_at = chrono::Utc::now();
+        self.session.plan_panel_open = self.show_plan_panel;
+        eprintln!("[save_current_session] plan_tasks={}, plan_panel_open={}", self.session.plan_tasks.len(), self.session.plan_panel_open);
         if let Some(store) = &self.store {
             let _ = store.save_session(&self.session);
         }
@@ -682,11 +684,13 @@ impl App {
             }
 
             Message::TogglePlanTaskExpanded(id) => {
+                eprintln!("[TogglePlanTaskExpanded] id={}, was_expanded={}", id, self.plan_task_expanded.contains(&id));
                 if self.plan_task_expanded.contains(&id) {
                     self.plan_task_expanded.remove(&id);
                 } else {
                     self.plan_task_expanded.insert(id);
                 }
+                eprintln!("[TogglePlanTaskExpanded] expanded_set={:?}", self.plan_task_expanded);
                 Task::none()
             }
 
@@ -696,6 +700,8 @@ impl App {
                 self.plan_pending_review = false;
                 self.plan_task_expanded.clear(); // Collapse all tasks in execute mode
                 let _ = freako_core::config::save_config(&self.config);
+                // Save now so plan_tasks survive even if execution is interrupted.
+                self.save_current_session();
                 self.clear_input();
                 self.start_agent_run_with_message("Plan approved. Execute it.".to_string())
             }
@@ -736,6 +742,18 @@ impl App {
                 self.save_current_session();
                 if let Some(store) = &self.store {
                     if let Ok(Some(session)) = store.load_session(&id) {
+                        // Restore plan state before swapping the session
+                        self.plan_tasks = session.plan_tasks.clone();
+                        self.show_plan_panel = session.plan_panel_open;
+                        self.plan_task_expanded.clear();
+                        self.plan_task_md_cache.clear();
+                        for task in &session.plan_tasks {
+                            self.plan_task_md_cache.insert(
+                                task.id.clone(),
+                                markdown::Content::parse(&task.description),
+                            );
+                        }
+                        self.plan_pending_review = false;
                         self.session = session;
                         self.streaming_text.clear();
                         self.streaming_content = markdown::Content::new();
@@ -1415,13 +1433,15 @@ impl App {
                 );
             }
             AgentEvent::PlanUpdated { tasks } => {
+                eprintln!("[PlanUpdated] {} tasks, ids: {:?}", tasks.len(), tasks.iter().map(|t| &t.id).collect::<Vec<_>>());
                 for task in &tasks {
                     self.plan_task_md_cache.insert(
                         task.id.clone(),
                         markdown::Content::parse(&task.description),
                     );
                 }
-                self.plan_tasks = tasks;
+                self.plan_tasks = tasks.clone();
+                self.session.plan_tasks = tasks;
                 self.show_plan_panel = true;
             }
             AgentEvent::PlanReadyForReview { tasks } => {
@@ -1432,6 +1452,7 @@ impl App {
                     );
                 }
                 self.plan_tasks = tasks.clone();
+                self.session.plan_tasks = tasks.clone();
                 self.plan_pending_review = true;
                 self.show_plan_panel = true;
                 // Expand all tasks for review
@@ -1446,7 +1467,8 @@ impl App {
                 );
             }
             AgentEvent::PlanTaskStatusChanged { tasks } => {
-                self.plan_tasks = tasks;
+                self.plan_tasks = tasks.clone();
+                self.session.plan_tasks = tasks;
             }
             AgentEvent::ResponseComplete { usage, .. } => {
                 // flush_streaming_text now builds the assistant message from

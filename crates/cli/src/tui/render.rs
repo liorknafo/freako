@@ -55,7 +55,7 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
         .constraints([Constraint::Min(10), Constraint::Length(1), Constraint::Length(input_height)])
         .split(main_area);
 
-    let plan_panel_width: u16 = if app.plan_tasks.is_empty() {
+    let plan_panel_width: u16 = if app.plan_tasks.is_empty() || app.plan_panel_hidden {
         0
     } else {
         36
@@ -67,6 +67,9 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
             Constraint::Length(plan_panel_width),
         ])
         .split(main_chunks[0]);
+
+    app.chat_area_rect = chat_plan_chunks[0];
+    app.plan_panel_rect = chat_plan_chunks[1];
 
     let width = chat_plan_chunks[0].width;
     let inner_width = width;
@@ -186,43 +189,88 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
         }
     }
 
+    app.plan_task_header_rows.clear();
     if !app.plan_tasks.is_empty() {
-        let title = if app.plan_pending_review {
-            "Plan (ready for review — Enter to approve)"
+        let title = if app.plan_focused {
+            "Plan ('f'/Esc exit)"
+        } else if app.plan_pending_review {
+            "Plan (Enter approve)"
         } else {
             "Plan"
         };
         let mut lines: Vec<Line<'_>> = Vec::new();
-        for task in &app.plan_tasks {
+        // Track which visual line index corresponds to a task header
+        let mut header_line_indices: Vec<(String, usize)> = Vec::new();
+        for (i, task) in app.plan_tasks.iter().enumerate() {
+            let is_selected = app.plan_focused && i == app.plan_selected_task;
+            let is_expanded = app.plan_task_expanded.contains(&task.id);
+            let chevron = if is_expanded { "▼" } else { "▶" };
             let status_prefix = match task.status {
                 freako_core::agent::events::TaskStatus::NotStarted => "[ ] ",
                 freako_core::agent::events::TaskStatus::InProgress => "[~] ",
                 freako_core::agent::events::TaskStatus::Done => "[x] ",
             };
+            let header_style = if is_selected {
+                Style::new().fg(Color::Indexed(252)).bg(SELECTED_BG).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(Color::Indexed(252)).add_modifier(Modifier::BOLD)
+            };
+            let status_style = if is_selected {
+                Style::new().fg(Color::Indexed(214)).bg(SELECTED_BG)
+            } else {
+                Style::new().fg(Color::Indexed(214))
+            };
+            let chevron_style = if is_selected {
+                Style::new().fg(Color::Indexed(243)).bg(SELECTED_BG)
+            } else {
+                Style::new().fg(Color::Indexed(243))
+            };
+            header_line_indices.push((task.id.clone(), lines.len()));
             lines.push(Line::from(vec![
-                Span::styled(status_prefix, Style::new().fg(Color::Indexed(214))),
-                Span::styled(task.header.clone(), Style::new().fg(Color::Indexed(252)).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{} ", chevron), chevron_style),
+                Span::styled(status_prefix, status_style),
+                Span::styled(task.header.clone(), header_style),
             ]));
-            // In review mode, show a brief description excerpt
-            if app.plan_pending_review && !task.description.is_empty() {
-                let excerpt: String = task.description.lines().next().unwrap_or("").chars().take(70).collect();
-                lines.push(Line::from(Span::styled(
-                    format!("    {}", excerpt),
-                    Style::new().fg(Color::Indexed(244)),
-                )));
+            if is_expanded && !task.description.is_empty() {
+                let panel_inner_width = 30_u16; // 36 panel - borders/padding/indent
+                let md_lines = super::message::markdown_to_lines(&task.description, panel_inner_width);
+                for md_line in md_lines {
+                    let mut indented: Vec<Span<'static>> = vec![Span::raw("  ")];
+                    indented.extend(md_line.spans);
+                    lines.push(Line::from(indented));
+                }
+                lines.push(Line::from(""));
+            }
+        }
+        let panel_rect = chat_plan_chunks[1];
+        // +1 for the block border/title row
+        let content_y = panel_rect.y + 1;
+        let visible_height = panel_rect.height.saturating_sub(1) as usize; // minus title row
+        let max_scroll = (lines.len()).saturating_sub(visible_height) as u16;
+        if app.plan_scroll_offset > max_scroll {
+            app.plan_scroll_offset = max_scroll;
+        }
+        let scroll = app.plan_scroll_offset;
+        for (task_id, line_idx) in header_line_indices {
+            let screen_y = content_y + line_idx as u16;
+            // Only register clickable rows that are visible after scrolling
+            if line_idx as u16 >= scroll {
+                app.plan_task_header_rows.push((task_id, screen_y - scroll));
             }
         }
         let plan = Paragraph::new(lines)
-            .block(Block::default().title(title).borders(Borders::LEFT).style(Style::new().bg(SIDEBAR_BG)))
-            .style(Style::new().bg(SIDEBAR_BG));
-        frame.render_widget(plan, chat_plan_chunks[1]);
+            .block(Block::default().title(title).borders(Borders::NONE).style(Style::new().bg(SIDEBAR_BG)))
+            .style(Style::new().bg(SIDEBAR_BG))
+            .scroll((scroll, 0));
+        frame.render_widget(plan, panel_rect);
     }
 
     render_status_bar(frame, app, main_chunks[1]);
 
     let plan_label = if app.config.plan_mode { "[PLAN MODE]" } else { "[EXECUTE]" };
     let input_title: String = match app.input_mode {
-        InputMode::Normal => format!("{} 'i' type | ↑↓ scroll | 'l' sessions | 'p' plan | 'o' settings | 'c' compact | 'n' new | 'q' quit", plan_label),
+        InputMode::Normal if app.plan_focused => format!("{} [PLAN] ↑↓ select | Enter toggle | Esc/f exit", plan_label),
+        InputMode::Normal => format!("{} 'i' type | ↑↓ scroll | 'l' sessions | 'p' plan | 'f' tasks | 'h' hide | 'o' settings | 'c' compact | 'n' new | 'q' quit", plan_label),
         InputMode::Editing if app.plan_pending_review => format!("{} Plan ready — Enter to approve, or type feedback", plan_label),
         InputMode::Editing if app.config.plan_mode => format!("{} PLAN MODE — Enter send, Esc normal", plan_label),
         InputMode::Editing => format!("{} Enter send, Ctrl+V paste image, Esc normal", plan_label),
