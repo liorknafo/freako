@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use futures::StreamExt;
 use tokio::sync::mpsc;
 
-use crate::agent::context::build_request;
+use crate::agent::context::{build_request, llm_compact_messages};
 use crate::agent::events::{
     AgentEvent, PlanTask, TaskStatus,
     ADD_TASK_TOOL_NAME, EDIT_TASK_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME,
@@ -224,6 +224,35 @@ pub async fn run_agent_loop(
         session.messages.push(ConversationMessage::assistant(parts));
 
         if tool_calls.is_empty() {
+            // LLM-based compaction before signaling done
+            let interaction_count: usize =
+                session.messages.iter().map(|m| m.parts.len().max(1)).sum();
+            if config.context.enable_compaction
+                && interaction_count > config.context.compact_after_messages
+            {
+                let _ = event_tx.send(AgentEvent::Compacting);
+                match llm_compact_messages(
+                    &session.messages,
+                    &config.context,
+                    provider.as_ref(),
+                    &config.provider.model,
+                    config.provider.max_tokens,
+                )
+                .await
+                {
+                    Ok(compacted) if compacted.len() < session.messages.len() => {
+                        session.messages = compacted;
+                    }
+                    Err(e) => {
+                        // LLM compaction failed — log but don't block the conversation
+                        let _ = event_tx.send(AgentEvent::Error(format!(
+                            "Compaction failed (non-fatal): {}",
+                            e
+                        )));
+                    }
+                    _ => {}
+                }
+            }
             let _ = event_tx.send(AgentEvent::Done);
             break;
         }

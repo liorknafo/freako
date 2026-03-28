@@ -97,6 +97,7 @@ pub enum AgentEvent {
     PlanTaskStatusChanged {
         tasks: Vec<PlanTask>,
     },
+    Compacting,
     Done,
     Cancelled,
     Error(String),
