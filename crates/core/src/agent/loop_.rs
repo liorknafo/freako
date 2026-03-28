@@ -48,8 +48,9 @@ pub async fn run_agent_loop(
     let registry = ToolRegistry::default_registry(&config);
     let plan_registry = ToolRegistry::plan_registry(&config);
     let mut active_registry = if config.plan_mode { &plan_registry } else { &registry };
-    let mut plan_tasks: Vec<PlanTask> = Vec::new();
-    let mut next_task_id: u32 = 1;
+    // Restore from session so a reloaded session continues its plan.
+    let mut plan_tasks: Vec<PlanTask> = session.plan_tasks.clone();
+    let mut next_task_id: u32 = plan_tasks.len() as u32 + 1;
     // Track approved items: tool names for always-approve and file paths for per-file approval
     let mut session_approved: HashSet<String> = HashSet::new();
     let working_dir_path = std::path::Path::new(&session.working_directory)
@@ -295,6 +296,7 @@ pub async fn run_agent_loop(
                 };
 
                 if !is_error {
+                    session.plan_tasks = plan_tasks.clone();
                     let _ = event_tx.send(AgentEvent::PlanUpdated {
                         tasks: plan_tasks.clone(),
                     });
@@ -328,6 +330,7 @@ pub async fn run_agent_loop(
                 };
 
                 if !is_error {
+                    session.plan_tasks = plan_tasks.clone();
                     let _ = event_tx.send(AgentEvent::PlanUpdated {
                         tasks: plan_tasks.clone(),
                     });
@@ -430,6 +433,7 @@ pub async fn run_agent_loop(
                 };
 
                 if !is_error {
+                    session.plan_tasks = plan_tasks.clone();
                     let _ = event_tx.send(AgentEvent::PlanTaskStatusChanged {
                         tasks: plan_tasks.clone(),
                     });
