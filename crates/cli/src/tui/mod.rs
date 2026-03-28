@@ -30,6 +30,7 @@ const ASSISTANT_STYLE: Style = Style::new().fg(Color::Indexed(252));
 const TOOL_STYLE: Style = Style::new().fg(Color::Indexed(180));
 const SYSTEM_STYLE: Style = Style::new().fg(Color::Indexed(145));
 const INPUT_CURSOR_STYLE: Style = Style::new().bg(Color::Indexed(240)).fg(Color::White);
+const INPUT_HINT_STYLE: Style = Style::new().fg(Color::Black).bg(Color::White);
 const CHAT_BG: Color = Color::Rgb(18, 18, 20);
 const INPUT_BG: Color = Color::Rgb(24, 24, 27);
 const APPROVAL_BG: Color = Color::Rgb(30, 30, 34);
