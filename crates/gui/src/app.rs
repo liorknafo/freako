@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use iced::widget::{column, container, markdown, row, text_editor};
 use iced::{Element, Length, Subscription, Task};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
 use freako_core::agent::events::AgentEvent;
@@ -106,6 +107,10 @@ pub struct App {
     queued_message_tx: Option<mpsc::UnboundedSender<String>>,
     /// Message typed while the agent is working — will be injected after the current tool finishes.
     pub queued_message: Option<String>,
+    /// Nested events from sub-agents, keyed by parent tool_call_id
+    pub sub_agent_events: HashMap<String, Vec<AgentEvent>>,
+    /// Shared approval senders for sub-agents — the UI routes approval responses through these
+    sub_agent_approval_senders: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<ApprovalResponse>>>>,
     store: Option<SessionStore>,
     memory_store: Option<MemoryStore>,
 }
@@ -313,6 +318,8 @@ impl App {
             cancel_tx: None,
             queued_message_tx: None,
             queued_message: None,
+            sub_agent_events: HashMap::new(),
+            sub_agent_approval_senders: Arc::new(Mutex::new(HashMap::new())),
             store,
             memory_store,
         };
@@ -565,9 +572,11 @@ impl App {
 
                 let config = self.config.clone();
                 let mut session = self.session.clone();
+                self.sub_agent_events.clear();
+                let sub_agent_senders = self.sub_agent_approval_senders.clone();
 
                 tokio::spawn(async move {
-                    run_agent_loop(config, &mut session, event_tx, approval_rx, cancel_rx, queued_message_rx).await;
+                    run_agent_loop(config, &mut session, event_tx, approval_rx, cancel_rx, queued_message_rx, sub_agent_senders).await;
                 });
 
                 self.is_at_bottom = true;
@@ -628,43 +637,34 @@ impl App {
             }
 
             Message::ApprovalApprove => {
-                if let Some(tx) = &self.approval_tx {
-                    let _ = tx.send(ApprovalResponse::Approve);
-                }
+                self.send_approval_response(ApprovalResponse::Approve);
                 self.pending_approval = None;
                 Task::none()
             }
 
             Message::ApprovalApproveSession => {
-                if let Some(tx) = &self.approval_tx {
-                    let _ = tx.send(ApprovalResponse::ApproveForSession);
-                }
+                self.send_approval_response(ApprovalResponse::ApproveForSession);
                 self.pending_approval = None;
                 Task::none()
             }
 
             Message::ApprovalApproveAlways => {
-                if let Some(tx) = &self.approval_tx {
-                    let _ = tx.send(ApprovalResponse::ApproveAlways);
-                }
-                
+                self.send_approval_response(ApprovalResponse::ApproveAlways);
+
                 // Add to config auto_approve list
                 if let Some(approval) = &self.pending_approval {
                     if !self.config.auto_approve.contains(&approval.tool_name) {
                         self.config.auto_approve.push(approval.tool_name.clone());
-                        // Save config
                         let _ = freako_core::config::save_config(&self.config);
                     }
                 }
-                
+
                 self.pending_approval = None;
                 Task::none()
             }
 
             Message::ApprovalDeny => {
-                if let Some(tx) = &self.approval_tx {
-                    let _ = tx.send(ApprovalResponse::Deny);
-                }
+                self.send_approval_response(ApprovalResponse::Deny);
                 self.pending_approval = None;
                 Task::none()
             }
@@ -1202,13 +1202,34 @@ impl App {
 
         let config = self.config.clone();
         let mut session = self.session.clone();
+        self.sub_agent_events.clear();
+        let sub_agent_senders = self.sub_agent_approval_senders.clone();
 
         tokio::spawn(async move {
-            run_agent_loop(config, &mut session, event_tx, approval_rx, cancel_rx, queued_message_rx).await;
+            run_agent_loop(config, &mut session, event_tx, approval_rx, cancel_rx, queued_message_rx, sub_agent_senders).await;
         });
 
         self.is_at_bottom = true;
         scroll_to_bottom()
+    }
+
+    /// Route an approval response to the correct channel — main agent or sub-agent.
+    fn send_approval_response(&self, response: ApprovalResponse) {
+        if let Some(approval) = &self.pending_approval {
+            if let Some(parent_id) = &approval.sub_agent_parent {
+                // Route to sub-agent's approval channel
+                let senders = self.sub_agent_approval_senders.clone();
+                let parent_id = parent_id.clone();
+                tokio::spawn(async move {
+                    let senders = senders.lock().await;
+                    if let Some(tx) = senders.get(&parent_id) {
+                        let _ = tx.send(response);
+                    }
+                });
+            } else if let Some(tx) = &self.approval_tx {
+                let _ = tx.send(response);
+            }
+        }
     }
 
     /// Push a message and its markdown content, keeping visible_count in sync.
@@ -1302,6 +1323,10 @@ impl App {
                 self.streaming_content.push_str(&text);
             }
             AgentEvent::ToolCallRequested { id, name, arguments } => {
+                // Auto-expand sub-agent tool calls so nested activity is visible
+                if name == "sub_agent" {
+                    self.expanded_tool_results.insert(id.clone());
+                }
                 // Track the tool call so flush_streaming_text can build the
                 // complete assistant message on the GUI's own session.
                 self.streaming_tool_calls.push((id, name, arguments));
@@ -1312,6 +1337,7 @@ impl App {
                     tool_name: name,
                     arguments,
                     expanded: false,
+                    sub_agent_parent: None,
                 });
             }
             AgentEvent::ToolExecutionStarted { name, .. } => {
@@ -1440,6 +1466,29 @@ impl App {
                         freako_core::session::types::ConversationMessage::user(&text),
                         content,
                     );
+                    self.rebuild_visible_contents();
+                }
+            }
+            AgentEvent::SubAgentEvent { parent_tool_call_id, event } => {
+                // Store nested events for the sub-agent's UI view
+                self.sub_agent_events
+                    .entry(parent_tool_call_id.clone())
+                    .or_default()
+                    .push(*event.clone());
+
+                // Handle nested approval requests — route through the sub-agent's channel
+                if let AgentEvent::ToolApprovalNeeded { ref id, ref name, ref arguments } = *event {
+                    self.pending_approval = Some(PendingApproval {
+                        id: id.clone(),
+                        tool_name: name.clone(),
+                        arguments: arguments.clone(),
+                        expanded: false,
+                        sub_agent_parent: Some(parent_tool_call_id.clone()),
+                    });
+                }
+
+                // Force rebuild on nested tool results
+                if matches!(*event, AgentEvent::ToolResult { .. } | AgentEvent::Done) {
                     self.rebuild_visible_contents();
                 }
             }

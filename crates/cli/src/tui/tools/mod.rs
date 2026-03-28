@@ -6,6 +6,7 @@ pub mod grep;
 pub mod glob;
 pub mod list_dir;
 pub mod web;
+pub mod sub_agent;
 
 use ratatui::prelude::*;
 use freako_core::agent::events::ToolOutputStream;
@@ -57,6 +58,9 @@ pub trait ToolView {
 
     /// Whether this tool is still running.
     fn is_running(&self) -> bool { false }
+
+    /// Push a nested agent event (only meaningful for sub_agent views).
+    fn push_nested_event(&mut self, _event: &freako_core::agent::events::AgentEvent) {}
 }
 
 /// Create the appropriate tool view for a typed ToolCall.
@@ -75,6 +79,7 @@ pub fn create_tool_view(tool_call_id: String, tool_call: ToolCall) -> Box<dyn To
         ToolCall::Glob { .. } => Box::new(glob::GlobView::new(info)),
         ToolCall::ListDir { .. } => Box::new(list_dir::ListDirView::new(info)),
         ToolCall::WebSearch { .. } | ToolCall::WebFetch { .. } => Box::new(web::WebView::new(info)),
+        ToolCall::SubAgent { .. } => Box::new(sub_agent::SubAgentView::new(info)),
         ToolCall::WriteFile { .. }
         | ToolCall::ListMemories { .. }
         | ToolCall::ReadMemory { .. }

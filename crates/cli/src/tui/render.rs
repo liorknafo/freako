@@ -418,6 +418,8 @@ fn render_streaming_markdown(text: &str, spinner: &str, width: u16) -> Vec<Line<
     lines
 }
 
+/// Returns (lines, sub_agent_header_indices) where header indices are relative
+/// to the start of the returned lines vec.
 fn render_streaming_tools(app: &mut App, spinner: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     lines.push(Line::styled(format!("{} Tools:", spinner), TOOL_STYLE.add_modifier(Modifier::BOLD)));
@@ -426,9 +428,20 @@ fn render_streaming_tools(app: &mut App, spinner: &str) -> Vec<Line<'static>> {
     for (id, name, args) in streaming_calls {
         let (title, summary) = format_tool_presentation(&name, &args)
             .unwrap_or_else(|| (name.clone().into(), fallback_tool_summary(&name, &args)));
-        let status = if app.live_shell_outputs.contains_key(&id) { "running…" } else { "queued…" };
-        lines.push(Line::styled(format!("  • {} – {} – {}", title, summary, status), TOOL_STYLE));
-        if name == "shell" {
+
+        if name == "sub_agent" {
+            // Always render expanded while streaming — no collapse toggle needed
+            if let Some(view) = app.tool_views.get(&id) {
+                let inner_width = app.last_inner_width.max(40);
+                // Always show uncollapsed (false) while streaming
+                lines.extend(super::tools::render_tool(view.as_ref(), false, inner_width));
+            } else {
+                let status = "starting…";
+                lines.push(Line::styled(format!("  • {} – {} – {}", title, summary, status), TOOL_STYLE));
+            }
+        } else if name == "shell" {
+            let status = if app.live_shell_outputs.contains_key(&id) { "running…" } else { "queued…" };
+            lines.push(Line::styled(format!("  • {} – {} – {}", title, summary, status), TOOL_STYLE));
             if let Some(output) = app.live_shell_outputs.get(&id).cloned() {
                 let viewport = app.shell_viewport.clone();
                 lines.extend(render_shell_console_lines(
@@ -441,6 +454,9 @@ fn render_streaming_tools(app: &mut App, spinner: &str) -> Vec<Line<'static>> {
                     SHELL_CONSOLE_VISIBLE_LINES,
                 ));
             }
+        } else {
+            let status = if app.live_shell_outputs.contains_key(&id) { "running…" } else { "queued…" };
+            lines.push(Line::styled(format!("  • {} – {} – {}", title, summary, status), TOOL_STYLE));
         }
     }
 

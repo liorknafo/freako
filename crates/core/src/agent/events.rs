@@ -97,6 +97,10 @@ pub enum AgentEvent {
     PlanTaskStatusChanged {
         tasks: Vec<PlanTask>,
     },
+    SubAgentEvent {
+        parent_tool_call_id: String,
+        event: Box<AgentEvent>,
+    },
     Compacting,
     Done,
     Cancelled,

@@ -168,13 +168,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
         chat_col = chat_col.push(bubble);
     }
 
-    if app.current_tool.is_some() || !app.tool_output_buffer.is_empty() {
+    let has_active_sub_agents = app.streaming_tool_calls.iter().any(|(_, name, _)| name == "sub_agent");
+    if app.current_tool.is_some() || !app.tool_output_buffer.is_empty() || has_active_sub_agents {
         use crate::ui::theme::AppTheme;
         let bubble = container(
             crate::ui::tool_view::streaming_tool_group_view(
-                &app.streaming_tool_calls,
-                app.current_tool.as_deref(),
-                &app.tool_output_buffer,
+                app,
                 SPINNER_FRAMES[app.spinner_tick as usize],
             )
         )

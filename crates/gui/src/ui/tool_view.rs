@@ -4,6 +4,8 @@ use iced::widget::{button, container, mouse_area, text, Column, Row};
 use iced::{Color, Element, Length};
 use serde_json::Value;
 
+use freako_core::agent::events::AgentEvent;
+use freako_core::tools::sub_agent::{SubAgentLogEntry, SubAgentResult};
 use freako_core::tools::tool_name::format_tool_presentation;
 
 use crate::app::{App, Message};
@@ -35,7 +37,12 @@ pub fn tool_group_view_owned(
         let result = results.get(&tool_call_id).cloned();
         let expanded = app.expanded_tool_results.contains(&tool_call_id);
         let parsed_diff = app.parsed_diffs.get(&tool_call_id).cloned();
-        col = col.push(tool_entry_view_owned(tool_call_id, name, arguments, result, expanded, parsed_diff));
+        if name == "sub_agent" {
+            let nested = app.sub_agent_events.get(&tool_call_id).cloned().unwrap_or_default();
+            col = col.push(sub_agent_entry_view(tool_call_id, arguments, result, expanded, &nested));
+        } else {
+            col = col.push(tool_entry_view_owned(tool_call_id, name, arguments, result, expanded, parsed_diff));
+        }
     }
 
     container(col)
@@ -52,37 +59,48 @@ pub fn tool_group_view_owned(
         .into()
 }
 
-pub fn streaming_tool_group_view<'a>(
-    calls: &'a [(String, String, Value)],
-    current_tool: Option<&'a str>,
-    tool_output_buffer: &'a str,
-    spinner: &'a str,
-) -> Element<'a, Message> {
+pub fn streaming_tool_group_view(
+    app: &App,
+    spinner: &str,
+) -> Element<'static, Message> {
+    let calls = &app.streaming_tool_calls;
+    let current_tool = app.current_tool.as_deref();
+    let tool_output_buffer = &app.tool_output_buffer;
+
     let mut col = Column::new().spacing(8);
     col = col.push(text(format!("{} Tools", spinner)).size(12).color(AppTheme::tool_active()));
 
     if calls.is_empty() {
-        let label = current_tool.unwrap_or("Tool");
+        let label = current_tool.unwrap_or("Tool").to_string();
         let body = if tool_output_buffer.is_empty() {
             format!("Running {}…", label)
         } else {
             tool_output_buffer.to_string()
         };
-        col = col.push(compact_row(label, body, AppTheme::text_primary()));
+        col = col.push(compact_row(&label, body, AppTheme::text_primary()));
     } else {
-        for (_, name, arguments) in calls {
-            let status = if current_tool == Some(name.as_str()) {
-                if tool_output_buffer.is_empty() {
-                    "running…".to_string()
-                } else {
-                    tool_output_buffer.to_string()
-                }
+        for (id, name, arguments) in calls {
+            if name == "sub_agent" {
+                // Render sub-agent with nested event details inline
+                let nested = app.sub_agent_events.get(id).cloned().unwrap_or_default();
+                let expanded = app.expanded_tool_results.contains(id);
+                col = col.push(sub_agent_entry_view(
+                    id.clone(), arguments.clone(), None, expanded, &nested,
+                ));
             } else {
-                "queued…".to_string()
-            };
-            let (title, summary) = tool_presentation(name, arguments);
-            let details = format!("{} — {}", summary, status);
-            col = col.push(compact_row(&title, details, AppTheme::text_primary()));
+                let status = if current_tool == Some(name.as_str()) {
+                    if tool_output_buffer.is_empty() {
+                        "running…".to_string()
+                    } else {
+                        tool_output_buffer.to_string()
+                    }
+                } else {
+                    "queued…".to_string()
+                };
+                let (title, summary) = tool_presentation(name, arguments);
+                let details = format!("{} — {}", summary, status);
+                col = col.push(compact_row(&title, details, AppTheme::text_primary()));
+            }
         }
     }
 
@@ -273,4 +291,202 @@ fn truncate_middle(s: &str, max: usize) -> String {
         .rev()
         .collect();
     format!("{}…{}", start, end)
+}
+
+/// Renders a sub_agent tool call with nested tool activity.
+fn sub_agent_entry_view(
+    tool_call_id: String,
+    arguments: Value,
+    result: Option<ToolResultOwned>,
+    expanded: bool,
+    nested_events: &[AgentEvent],
+) -> Element<'static, Message> {
+    let mut col = Column::new().spacing(4);
+
+    let task_summary = arguments.get("task")
+        .and_then(|v| v.as_str())
+        .map(|s| truncate_middle(s, 80))
+        .unwrap_or_else(|| "sub-agent".to_string());
+
+    let (status_text, status_color) = match &result {
+        Some(r) if r.is_error => ("✗ error", AppTheme::error()),
+        Some(_) => ("✓ done", AppTheme::success()),
+        None => ("… running", AppTheme::tool_active()),
+    };
+
+    let header = Row::new()
+        .spacing(6)
+        .push(text("⚙").size(12))
+        .push(text("sub_agent").size(12).color(AppTheme::role_user()))
+        .push(text(task_summary).size(11).color(AppTheme::text_muted()))
+        .push(text(status_text).size(11).color(status_color));
+
+    col = col.push(header);
+
+    if expanded {
+        let mut nested_col = Column::new().spacing(2);
+
+        if !nested_events.is_empty() {
+            // Live mode: build timeline from streaming events
+            let mut pending_text = String::new();
+            for event in nested_events {
+                match event {
+                    AgentEvent::StreamDelta(delta) => {
+                        pending_text.push_str(delta);
+                    }
+                    AgentEvent::ToolCallRequested { name, arguments, .. } => {
+                        let trimmed = pending_text.trim().to_string();
+                        if !trimmed.is_empty() {
+                            nested_col = nested_col.push(
+                                text(truncate_middle(&trimmed, 200))
+                                    .size(11)
+                                    .color(AppTheme::text_primary())
+                            );
+                        }
+                        pending_text.clear();
+
+                        let (title, summary) = tool_presentation(name, arguments);
+                        nested_col = nested_col.push(
+                            Row::new()
+                                .spacing(4)
+                                .push(text("  ⚙").size(11))
+                                .push(text(title).size(11).color(AppTheme::role_user()))
+                                .push(text(summary).size(10).color(AppTheme::text_muted()))
+                        );
+                    }
+                    AgentEvent::ToolResult { name, content, is_error, .. } => {
+                        let (status, color) = if *is_error {
+                            ("✗", AppTheme::error())
+                        } else {
+                            ("✓", AppTheme::success())
+                        };
+                        nested_col = nested_col.push(
+                            text(format!("    {} {}", status, name)).size(10).color(color)
+                        );
+                        if !content.is_empty() {
+                            let preview = content.lines().take(3).collect::<Vec<_>>().join(" | ");
+                            nested_col = nested_col.push(
+                                text(format!("    ↳ {}", truncate_middle(&preview, 120)))
+                                    .size(10)
+                                    .color(AppTheme::text_muted())
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let trimmed = pending_text.trim().to_string();
+            if !trimmed.is_empty() {
+                nested_col = nested_col.push(
+                    text(truncate_middle(&trimmed, 200))
+                        .size(11)
+                        .color(AppTheme::text_primary())
+                );
+            }
+        } else if let Some(ref res) = result {
+            // Reload mode: reconstruct from persisted SubAgentResult
+            if let Ok(sa_result) = serde_json::from_str::<SubAgentResult>(&res.content) {
+                for entry in &sa_result.log {
+                    match entry {
+                        SubAgentLogEntry::Text { text: t } => {
+                            nested_col = nested_col.push(
+                                text(truncate_middle(t, 200))
+                                    .size(11)
+                                    .color(AppTheme::text_primary())
+                            );
+                        }
+                        SubAgentLogEntry::ToolCall { name, summary } => {
+                            nested_col = nested_col.push(
+                                Row::new()
+                                    .spacing(4)
+                                    .push(text("  ⚙").size(11))
+                                    .push(text(name.clone()).size(11).color(AppTheme::role_user()))
+                                    .push(text(summary.clone()).size(10).color(AppTheme::text_muted()))
+                            );
+                        }
+                        SubAgentLogEntry::ToolResult { name, preview, is_error } => {
+                            let (status, color) = if *is_error {
+                                ("✗", AppTheme::error())
+                            } else {
+                                ("✓", AppTheme::success())
+                            };
+                            nested_col = nested_col.push(
+                                text(format!("    {} {}", status, name)).size(10).color(color)
+                            );
+                            if !preview.is_empty() {
+                                nested_col = nested_col.push(
+                                    text(format!("    ↳ {}", truncate_middle(preview, 120)))
+                                        .size(10)
+                                        .color(AppTheme::text_muted())
+                                );
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Fallback: show raw content
+                nested_col = nested_col.push(
+                    text(truncate_middle(&res.content, 300))
+                        .size(11)
+                        .color(AppTheme::text_secondary())
+                );
+            }
+        }
+
+        if nested_events.is_empty() && result.is_none() {
+            nested_col = nested_col.push(
+                text("  thinking…").size(10).color(AppTheme::text_muted())
+            );
+        }
+
+        col = col.push(
+            container(nested_col)
+                .padding([4, 8])
+                .width(Length::Fill)
+                .style(|_t: &iced::Theme| container::Style {
+                    background: Some(AppTheme::bg().into()),
+                    border: iced::Border {
+                        radius: 4.0.into(),
+                        width: 1.0,
+                        color: AppTheme::border_subtle(),
+                    },
+                    ..Default::default()
+                })
+        );
+
+        col = col.push(
+            button(text("Hide").size(10))
+                .padding([2, 8])
+                .on_press(Message::ToggleToolResult(tool_call_id))
+                .style(|_t: &iced::Theme, _s| button::Style {
+                    text_color: AppTheme::text_muted(),
+                    background: None,
+                    ..Default::default()
+                })
+        );
+    } else {
+        col = col.push(
+            button(text("Show details").size(10))
+                .padding([2, 8])
+                .on_press(Message::ToggleToolResult(tool_call_id))
+                .style(|_t: &iced::Theme, _s| button::Style {
+                    text_color: AppTheme::text_muted(),
+                    background: None,
+                    ..Default::default()
+                })
+        );
+    }
+
+    container(col)
+        .padding(6)
+        .width(Length::Fill)
+        .style(|_t: &iced::Theme| container::Style {
+            background: Some(Color::from_rgba(0.1, 0.1, 0.14, 0.4).into()),
+            border: iced::Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
 }

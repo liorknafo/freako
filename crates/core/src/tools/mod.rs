@@ -21,6 +21,7 @@ pub mod read_memory;
 pub mod write_memory;
 pub mod delete_memory;
 pub mod diff;
+pub mod sub_agent;
 
 use std::collections::HashMap;
 use async_trait::async_trait;
@@ -122,6 +123,13 @@ impl ToolRegistry {
 
     /// Registry used in plan mode — allows read-only local tools plus
     /// non-mutating research tools like web access and inspection shell commands.
+    /// Registry for sub-agents — all default tools minus sub_agent (prevents recursion).
+    pub fn sub_agent_registry(config: &AppConfig) -> Self {
+        let mut registry = Self::default_registry(config);
+        registry.tools.remove("sub_agent");
+        registry
+    }
+
     pub fn plan_registry(config: &AppConfig) -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(file_read::FileReadTool));
