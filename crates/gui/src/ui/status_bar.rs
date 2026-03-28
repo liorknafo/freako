@@ -165,6 +165,29 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .into()
     });
 
+    let has_plan = !app.plan_tasks.is_empty();
+    let plan_panel_btn = button(
+        text(if app.show_plan_panel { "Tasks \u{25B6}" } else { "Tasks \u{25C0}" })
+            .size(12)
+            .color(if has_plan { AppTheme::plan_accent() } else { AppTheme::text_muted() }),
+    )
+    .on_press_maybe(if has_plan { Some(Message::TogglePlanPanel) } else { None })
+    .padding([4, 12])
+    .style(move |_t: &iced::Theme, status| {
+        let bg = match status {
+            button::Status::Hovered if has_plan => AppTheme::sidebar_item_hover(),
+            _ => Color::TRANSPARENT,
+        };
+        button::Style {
+            background: Some(bg.into()),
+            border: iced::Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    });
+
     container(
         row![
             text("Provider").size(12).color(AppTheme::text_muted()),
@@ -177,6 +200,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             text(" | ").size(12).color(AppTheme::text_muted()),
             text(status).size(12).color(status_color),
             compact_btn,
+            plan_panel_btn,
             plan_btn,
             settings_btn,
         ]

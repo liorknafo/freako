@@ -102,39 +102,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
         );
     }
 
-    if let Some(plan_text) = &app.current_plan_text {
-        use crate::ui::theme::AppTheme;
-        let heading = if app.plan_pending_review {
-            "Current Plan — ready for review"
-        } else {
-            "Current Plan"
-        };
-        let plan_md: Element<'_, markdown::Uri> = markdown::view(
-            app.current_plan_content.items(),
-            md_settings(),
-        )
-        .into();
-        let bubble = container(
-            Column::new()
-                .spacing(8)
-                .push(text(heading).size(12).color(AppTheme::plan_accent()))
-                .push(plan_md.map(|_url| Message::LinkClicked(String::new())))
-                .push(text(format!("{} chars", plan_text.chars().count())).size(11).color(AppTheme::text_muted()))
-        )
-        .padding(16)
-        .width(Length::Fill)
-        .style(|_t: &iced::Theme| container::Style {
-            background: Some(AppTheme::plan_bg().into()),
-            border: iced::Border {
-                radius: 10.0.into(),
-                width: 1.0,
-                color: AppTheme::plan_accent(),
-            },
-            ..Default::default()
-        });
-        chat_col = chat_col.push(bubble);
-    }
-
     for (i, group) in app.grouped_messages.iter().enumerate() {
         let md_sections = app.grouped_md_contents.get(i)
             .map(|v| v.as_slice())

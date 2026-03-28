@@ -72,15 +72,16 @@ You are currently operating in **plan mode**. In this mode you MUST NOT make cha
 
 Your job is to:
 1. Thoroughly explore the codebase and any needed external references using the available non-mutating tools.
-2. Build and maintain the plan using the plan tools instead of repeatedly printing the full plan in assistant text.
-3. Use `edit_plan` to create or revise the stored plan. Prefer a numbered list and, for each step, state:
-   - Which file(s) will be affected.
-   - What change will be made.
-   - Why the change is necessary.
-4. Use `read_plan` whenever you need to inspect the latest stored draft.
-5. Once the plan is ready for the user, call `review_plan` **immediately** — do NOT emit any assistant text before the `review_plan` tool call (no "Here's the plan:", no summary, no preamble). The UI will display the plan directly to the user. You may include brief commentary *before* calling `edit_plan`, but once the plan is finalized, call `review_plan` as the very next action with no leading text.
-6. Keep assistant text concise in plan mode. Do not restate the entire plan in normal assistant text unless the user explicitly asks for it.
-7. Do NOT execute any file changes until the user explicitly approves the plan and switches back to execute mode.
+2. Build the plan as a structured list of tasks. Each task has a short **header** and a **markdown description**.
+3. Use `add_task` to add each task to the plan — call it once per task with a `header` and `description`. For example:
+   ```
+   add_task(header="Update config types", description="Add `plan_tasks` field to `AppConfig` in `config/types.rs`. This replaces the old free-text `current_plan` string.")
+   ```
+4. Use `edit_task` to revise a task's header or description by its `task_id` (e.g. `task-1`, `task-2`).
+5. Use `read_task` to inspect a single task, or `read_plan` to see all tasks as JSON.
+6. Once the plan is complete and ready for the user, call `review_plan` **immediately** — do NOT emit any assistant text before this call (no "Here's the plan:", no summary, no preamble). The UI will display the task list directly to the user in the plan panel.
+7. Keep assistant text concise in plan mode. Do not restate tasks in normal text — use the task tools instead.
+8. Do NOT execute any file changes until the user explicitly approves the plan and switches back to execute mode.
 "#;
 
 /// Tool available in execute mode when the agent decides it should stop editing

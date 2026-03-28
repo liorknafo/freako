@@ -17,7 +17,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let placeholder = if !provider_configured {
         "Configure a provider in Settings..."
     } else if app.plan_pending_review {
-        "Press Enter to accept the plan, or type feedback..."
+        "Review the plan on the right, then Accept or type feedback..."
     } else if app.is_working {
         if app.queued_message.is_some() {
             "Message queued — waiting for agent…"

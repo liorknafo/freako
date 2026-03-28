@@ -16,7 +16,7 @@ use freako_core::session::store::SessionStore;
 use freako_core::session::title::maybe_generate_session_title;
 use freako_core::session::types::Session;
 
-use crate::ui::{approval_dialog, chat_view, input_area, settings_panel, sidebar, status_bar};
+use crate::ui::{approval_dialog, chat_view, input_area, plan_panel, settings_panel, sidebar, status_bar};
 use crate::ui::approval_dialog::PendingApproval;
 use crate::ui::chat_view::scroll_to_bottom;
 use crate::ui::theme::AppTheme;
@@ -67,8 +67,10 @@ pub struct App {
     pub grouped_md_contents: Vec<Vec<markdown::Content>>,
     /// Markdown text selection state
     pub md_selection: iced_selectable_markdown::SelectionState,
-    pub current_plan_text: Option<String>,
-    pub current_plan_content: markdown::Content,
+    pub plan_tasks: Vec<freako_core::agent::events::PlanTask>,
+    pub plan_task_expanded: HashSet<String>,
+    pub plan_task_md_cache: HashMap<String, markdown::Content>,
+    pub show_plan_panel: bool,
     pub is_working: bool,
     pub is_thinking: bool,
     pub current_tool: Option<String>,
@@ -216,6 +218,11 @@ pub enum Message {
     OAuthResult(Result<OAuthCredentials, String>),
     OAuthLogout,
 
+    // Plan panel
+    TogglePlanPanel,
+    TogglePlanTaskExpanded(String),
+    AcceptPlan,
+
     // Misc
     OpenUrl(String),
     LinkClicked(String),
@@ -277,8 +284,10 @@ impl App {
             grouped_messages: Vec::new(),
             grouped_md_contents: Vec::new(),
             md_selection: iced_selectable_markdown::SelectionState::new(),
-            current_plan_text: None,
-            current_plan_content: markdown::Content::new(),
+            plan_tasks: Vec::new(),
+            plan_task_expanded: HashSet::new(),
+            plan_task_md_cache: HashMap::new(),
+            show_plan_panel: false,
             is_working: false,
             is_thinking: false,
             current_tool: None,
@@ -516,12 +525,7 @@ impl App {
                     }
 
                     if text.is_empty() {
-                        eprintln!("[SendMessage] plan approved, switching to execute mode");
-                        self.config.plan_mode = false;
-                        self.plan_pending_review = false;
-                        let _ = freako_core::config::save_config(&self.config);
-                        self.clear_input();
-                        return self.start_agent_run_with_message("Plan approved. Execute it.".to_string());
+                        return Task::done(Message::AcceptPlan);
                     }
 
                     self.plan_pending_review = false;
@@ -596,6 +600,10 @@ impl App {
                 self.pending_approval = None;
                 self.queued_message = None;
                 self.plan_pending_review = false;
+                self.plan_tasks.clear();
+                self.plan_task_expanded.clear();
+                self.plan_task_md_cache.clear();
+                self.show_plan_panel = false;
                 self.queued_message_tx = None;
                 Task::none()
             }
@@ -668,6 +676,30 @@ impl App {
                 Task::none()
             }
 
+            Message::TogglePlanPanel => {
+                self.show_plan_panel = !self.show_plan_panel;
+                Task::none()
+            }
+
+            Message::TogglePlanTaskExpanded(id) => {
+                if self.plan_task_expanded.contains(&id) {
+                    self.plan_task_expanded.remove(&id);
+                } else {
+                    self.plan_task_expanded.insert(id);
+                }
+                Task::none()
+            }
+
+            Message::AcceptPlan => {
+                eprintln!("[AcceptPlan] switching to execute mode");
+                self.config.plan_mode = false;
+                self.plan_pending_review = false;
+                self.plan_task_expanded.clear(); // Collapse all tasks in execute mode
+                let _ = freako_core::config::save_config(&self.config);
+                self.clear_input();
+                self.start_agent_run_with_message("Plan approved. Execute it.".to_string())
+            }
+
             Message::ToggleSettings => {
                 self.show_settings = !self.show_settings;
                 if !self.show_settings {
@@ -692,6 +724,10 @@ impl App {
                 self.is_working = false;
                 self.pending_approval = None;
                 self.plan_pending_review = false;
+                self.plan_tasks.clear();
+                self.plan_task_expanded.clear();
+                self.plan_task_md_cache.clear();
+                self.show_plan_panel = false;
                 self.refresh_session_list();
                 Task::none()
             }
@@ -741,6 +777,10 @@ impl App {
                     self.pending_approval = None;
                     self.queued_message = None;
                     self.plan_pending_review = false;
+                    self.plan_tasks.clear();
+                    self.plan_task_expanded.clear();
+                    self.plan_task_md_cache.clear();
+                    self.show_plan_panel = false;
                 }
                 self.refresh_session_list();
                 Task::none()
@@ -1348,15 +1388,29 @@ impl App {
                     content,
                 );
             }
-            AgentEvent::PlanUpdated { content } => {
-                self.current_plan_text = Some(content.clone());
-                self.current_plan_content = markdown::Content::parse(&content);
+            AgentEvent::PlanUpdated { tasks } => {
+                for task in &tasks {
+                    self.plan_task_md_cache.insert(
+                        task.id.clone(),
+                        markdown::Content::parse(&task.description),
+                    );
+                }
+                self.plan_tasks = tasks;
+                self.show_plan_panel = true;
             }
-            AgentEvent::PlanReadyForReview { content } => {
-                self.current_plan_text = Some(content.clone());
-                self.current_plan_content = markdown::Content::parse(&content);
+            AgentEvent::PlanReadyForReview { tasks } => {
+                for task in &tasks {
+                    self.plan_task_md_cache.insert(
+                        task.id.clone(),
+                        markdown::Content::parse(&task.description),
+                    );
+                }
+                self.plan_tasks = tasks.clone();
                 self.plan_pending_review = true;
-                let notice = "*Plan ready. Press Enter to accept it, or type feedback to improve it.*";
+                self.show_plan_panel = true;
+                // Expand all tasks for review
+                self.plan_task_expanded = tasks.iter().map(|t| t.id.clone()).collect();
+                let notice = "*Plan ready. Review the plan panel, then Accept or type feedback.*";
                 let content = markdown::Content::parse(notice);
                 self.push_message(
                     ConversationMessage::assistant(vec![
@@ -1364,6 +1418,9 @@ impl App {
                     ]),
                     content,
                 );
+            }
+            AgentEvent::PlanTaskStatusChanged { tasks } => {
+                self.plan_tasks = tasks;
             }
             AgentEvent::ResponseComplete { usage, .. } => {
                 // flush_streaming_text now builds the assistant message from
@@ -1522,12 +1579,18 @@ impl App {
         main_col = main_col.push(chat_view::view(self));
         main_col = main_col.push(input_area::view(self));
 
-        let main_view: Element<'_, Message> = row![
+        let mut layout_row = row![
             sidebar::view(&self.session_list, self.session.id.to_string()),
             container(main_col).width(Length::Fill),
-        ]
-        .height(Length::Fill)
-        .into();
+        ];
+
+        if !self.plan_tasks.is_empty() {
+            layout_row = layout_row.push(plan_panel::view(self));
+        }
+
+        let main_view: Element<'_, Message> = layout_row
+            .height(Length::Fill)
+            .into();
 
         if let Some(approval) = &self.pending_approval {
             iced::widget::stack![

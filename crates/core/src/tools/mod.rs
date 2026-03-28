@@ -8,7 +8,10 @@ pub mod shell;
 pub mod list_dir;
 pub mod list_skills;
 pub mod enter_plan_mode;
-pub mod edit_plan;
+pub mod add_task;
+pub mod edit_task;
+pub mod read_task;
+pub mod update_task_status;
 pub mod read_plan;
 pub mod review_plan;
 pub mod web_search;
@@ -111,9 +114,9 @@ impl ToolRegistry {
         registry.register(Box::new(web_search::WebSearchTool::new()));
         registry.register(Box::new(web_fetch::WebFetchTool::new()));
         registry.register(Box::new(enter_plan_mode::EnterPlanModeTool));
-        registry.register(Box::new(edit_plan::EditPlanTool));
         registry.register(Box::new(read_plan::ReadPlanTool));
         registry.register(Box::new(review_plan::ReviewPlanTool));
+        registry.register(Box::new(update_task_status::UpdateTaskStatusTool));
         registry
     }
 
@@ -133,7 +136,9 @@ impl ToolRegistry {
         registry.register(Box::new(read_memory::ReadMemoryTool {
             data_dir: config.data_dir.clone(),
         }));
-        registry.register(Box::new(edit_plan::EditPlanTool));
+        registry.register(Box::new(add_task::AddTaskTool));
+        registry.register(Box::new(edit_task::EditTaskTool));
+        registry.register(Box::new(read_task::ReadTaskTool));
         registry.register(Box::new(read_plan::ReadPlanTool));
         registry.register(Box::new(review_plan::ReviewPlanTool));
         registry.register(Box::new(web_search::WebSearchTool::new()));

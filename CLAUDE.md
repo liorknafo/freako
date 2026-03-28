@@ -60,6 +60,10 @@ Fork/extension of iced markdown with native text selection support.
 - **Message format**: `ConversationMessage` uses `MessagePart` enum that mixes Text, ToolCall, ToolResult, and ToolOutput (streaming shell) within a single message.
 - **Streaming**: Provider responses stream token-by-token. Shell tool output also streams via channels for real-time display.
 
+## Rules
+
+- Always run `cargo check --workspace` before declaring any task complete.
+
 ## Configuration
 
 Config file: `~/.config/freako/config.toml`

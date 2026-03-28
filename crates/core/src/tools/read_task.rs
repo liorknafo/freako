@@ -3,22 +3,28 @@ use serde_json::json;
 
 use super::{Tool, ToolError};
 
-pub struct ReadPlanTool;
+pub struct ReadTaskTool;
 
 #[async_trait]
-impl Tool for ReadPlanTool {
+impl Tool for ReadTaskTool {
     fn name(&self) -> &str {
-        "read_plan"
+        "read_task"
     }
 
     fn description(&self) -> &str {
-        "Read all tasks in the current plan. Returns a JSON array of tasks with id, header, description, and status."
+        "Read a specific task by ID. Returns the task's header, description, and status."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The ID of the task to read"
+                }
+            },
+            "required": ["task_id"],
             "additionalProperties": false
         })
     }

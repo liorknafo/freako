@@ -127,7 +127,7 @@ struct App {
     streaming_text: String,
     streaming_tool_calls: Vec<(String, String, serde_json::Value)>,
     current_tool: Option<String>,
-    current_plan_text: Option<String>,
+    plan_tasks: Vec<freako_core::agent::events::PlanTask>,
     tool_output_buffer: String,
     live_shell_outputs: HashMap<String, LiveShellOutput>,
     completed_shell_outputs: HashMap<String, CompletedShellOutput>,
@@ -522,7 +522,7 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
         streaming_text: String::new(),
         streaming_tool_calls: Vec::new(),
         current_tool: None,
-        current_plan_text: None,
+        plan_tasks: Vec::new(),
         tool_output_buffer: String::new(),
         live_shell_outputs: HashMap::new(),
         completed_shell_outputs: HashMap::new(),
@@ -1157,13 +1157,16 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                     app.status_message = format!("Retry {}/{}: {}", attempt, max_attempts, error);
                 }
                 AgentEvent::EnteredPlanMode => app.config.plan_mode = true,
-                AgentEvent::PlanUpdated { content } => {
-                    app.current_plan_text = Some(content);
+                AgentEvent::PlanUpdated { tasks } => {
+                    app.plan_tasks = tasks;
                 }
-                AgentEvent::PlanReadyForReview { content } => {
-                    app.current_plan_text = Some(content);
+                AgentEvent::PlanReadyForReview { tasks } => {
+                    app.plan_tasks = tasks;
                     app.plan_pending_review = true;
                     app.status_message = "Plan ready — Enter to approve".into();
+                }
+                AgentEvent::PlanTaskStatusChanged { tasks } => {
+                    app.plan_tasks = tasks;
                 }
                 AgentEvent::QueuedMessageInjected => {}
             }
