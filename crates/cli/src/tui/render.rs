@@ -55,20 +55,16 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
         .constraints([Constraint::Min(10), Constraint::Length(1), Constraint::Length(input_height)])
         .split(main_area);
 
-    let plan_panel_height: u16 = if app.plan_tasks.is_empty() {
+    let plan_panel_width: u16 = if app.plan_tasks.is_empty() {
         0
     } else {
-        // 1 line per task header + 1 line per description (review mode) + 1 for border
-        let lines = app.plan_tasks.len()
-            + if app.plan_pending_review { app.plan_tasks.len() } else { 0 }
-            + 1;
-        (lines as u16).clamp(3, 12)
+        36
     };
     let chat_plan_chunks = Layout::default()
-        .direction(Direction::Vertical)
+        .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Min(8),
-            Constraint::Length(plan_panel_height),
+            Constraint::Min(20),
+            Constraint::Length(plan_panel_width),
         ])
         .split(main_chunks[0]);
 
@@ -217,9 +213,8 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
             }
         }
         let plan = Paragraph::new(lines)
-            .block(Block::default().title(title).borders(Borders::TOP).style(Style::new().bg(SIDEBAR_BG)))
-            .style(Style::new().bg(SIDEBAR_BG))
-            .wrap(Wrap { trim: false });
+            .block(Block::default().title(title).borders(Borders::LEFT).style(Style::new().bg(SIDEBAR_BG)))
+            .style(Style::new().bg(SIDEBAR_BG));
         frame.render_widget(plan, chat_plan_chunks[1]);
     }
 
