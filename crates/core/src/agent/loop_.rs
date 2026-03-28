@@ -6,9 +6,9 @@ use tokio::sync::mpsc;
 use crate::agent::context::{build_request, llm_compact_messages};
 use crate::agent::events::{
     AgentEvent, PlanTask, TaskStatus,
-    ADD_TASK_TOOL_NAME, EDIT_TASK_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME,
-    READ_PLAN_TOOL_NAME, READ_TASK_TOOL_NAME, REVIEW_PLAN_TOOL_NAME,
-    UPDATE_TASK_STATUS_TOOL_NAME,
+    ADD_TASK_TOOL_NAME, DELETE_TASK_TOOL_NAME, EDIT_TASK_TOOL_NAME,
+    ENTER_PLAN_MODE_TOOL_NAME, READ_PLAN_TOOL_NAME, READ_TASK_TOOL_NAME,
+    REVIEW_PLAN_TOOL_NAME, UPDATE_TASK_STATUS_TOOL_NAME,
 };
 use crate::agent::prompt::build_system_prompt;
 use crate::config::types::AppConfig;
@@ -351,6 +351,37 @@ pub async fn run_agent_loop(
                             if let Some(h) = new_header { task.header = h.to_string(); }
                             if let Some(d) = new_description { task.description = d.to_string(); }
                             ("Task edited".to_string(), false)
+                        } else {
+                            (format!("Task not found: {}", task_id), true)
+                        }
+                    }
+                    None => ("Missing required 'task_id'".to_string(), true),
+                };
+
+                if !is_error {
+                    session.plan_tasks = plan_tasks.clone();
+                    let _ = event_tx.send(AgentEvent::PlanUpdated {
+                        tasks: plan_tasks.clone(),
+                    });
+                }
+                session.messages.push(ConversationMessage::tool_result(
+                    tc.id.clone(), tc.name.clone(), result.clone(), is_error, Some(args.clone()),
+                ));
+                let _ = event_tx.send(AgentEvent::ToolResult {
+                    tool_call_id: tc.id.clone(), name: tc.name.clone(),
+                    content: result, is_error, arguments: Some(args.clone()),
+                });
+                continue;
+            }
+
+            if tc.name == DELETE_TASK_TOOL_NAME {
+                let task_id = args.get("task_id").and_then(|v| v.as_str());
+
+                let (result, is_error) = match task_id {
+                    Some(task_id) => {
+                        if let Some(pos) = plan_tasks.iter().position(|t| t.id == task_id) {
+                            plan_tasks.remove(pos);
+                            (format!("Task deleted: {}", task_id), false)
                         } else {
                             (format!("Task not found: {}", task_id), true)
                         }
