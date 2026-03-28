@@ -16,7 +16,7 @@ use crate::config::types::AppConfig;
 use crate::provider::{self, types::TokenUsage, RetryConfig};
 use crate::session::types::{ConversationMessage, MessagePart, Session};
 use crate::tools::ToolRegistry;
-use crate::tools::sub_agent::{SubAgentTool, SubAgentContext};
+use crate::tools::sub_agent::{SubAgentContext, SubAgentTool};
 
 #[derive(Debug, Clone)]
 pub enum ApprovalResponse {
@@ -56,34 +56,26 @@ pub async fn run_agent_loop(
     // Cancel broadcast — sub-agents subscribe to this for cancellation propagation
     let (cancel_broadcast, _) = broadcast::channel::<()>(16);
 
-    let mut registry = ToolRegistry::default_registry(&config);
-    // Register sub_agent tool with runtime context
-    registry.register(Box::new(SubAgentTool::new(SubAgentContext {
-        config: config.clone(),
-        parent_event_tx: event_tx.clone(),
-        cancel_broadcast: cancel_broadcast.clone(),
-        sub_agent_approval_senders: sub_agent_approval_senders.clone(),
-        session_approved: session_approved.clone(),
-        working_directory: session.working_directory.clone(),
-    })));
-
+    let registry = ToolRegistry::default_registry(&config);
+    let sub_agent_registry = ToolRegistry::main_sub_agent_registry(
+        &config,
+        SubAgentContext {
+            config: config.clone(),
+            parent_event_tx: event_tx.clone(),
+            cancel_broadcast: cancel_broadcast.clone(),
+            sub_agent_approval_senders: sub_agent_approval_senders.clone(),
+            session_approved: session_approved.clone(),
+            working_directory: session.working_directory.clone(),
+        },
+    );
     let plan_registry = ToolRegistry::plan_registry(&config);
-    let mut active_registry = if config.plan_mode { &plan_registry } else { &registry };
+    let plan_sub_agent_registry = ToolRegistry::plan_sub_agent_registry(&config);
     // Restore from session so a reloaded session continues its plan.
     let mut plan_tasks: Vec<PlanTask> = session.plan_tasks.clone();
     let mut next_task_id: u32 = plan_tasks.len() as u32 + 1;
     let working_dir_path = std::path::Path::new(&session.working_directory)
         .canonicalize()
         .unwrap_or_else(|_| std::path::PathBuf::from(&session.working_directory));
-
-    let system_prompt = build_system_prompt(
-        config.system_prompt.as_deref(),
-        &session.working_directory,
-        &config.provider.model,
-        config.plan_mode,
-        &config,
-    )
-    .await;
 
     loop {
         // Check for cancellation
@@ -92,6 +84,21 @@ pub async fn run_agent_loop(
             let _ = event_tx.send(AgentEvent::Cancelled);
             break;
         }
+
+        let active_registry = if config.plan_mode { &plan_registry } else { &registry };
+        let active_sub_agent_registry = if config.plan_mode {
+            &plan_sub_agent_registry
+        } else {
+            &sub_agent_registry
+        };
+        let system_prompt = build_system_prompt(
+            config.system_prompt.as_deref(),
+            &session.working_directory,
+            &config.provider.model,
+            config.plan_mode,
+            &config,
+        )
+        .await;
 
         // Send thinking event before making API request
         let _ = event_tx.send(AgentEvent::Thinking);
@@ -245,6 +252,13 @@ pub async fn run_agent_loop(
         session.messages.push(ConversationMessage::assistant(parts));
 
         if tool_calls.is_empty() {
+            if has_incomplete_plan(&plan_tasks) {
+                session.messages.push(ConversationMessage::user(
+                    "Continue executing the approved plan. Do not stop until every plan task is marked done, unless you hit a real blocking issue that must be surfaced to the user.",
+                ));
+                continue;
+            }
+
             // LLM-based compaction before signaling done
             let interaction_count: usize =
                 session.messages.iter().map(|m| m.parts.len().max(1)).sum();
@@ -301,7 +315,6 @@ pub async fn run_agent_loop(
 
             if tc.name == ENTER_PLAN_MODE_TOOL_NAME {
                 config.plan_mode = true;
-                active_registry = &plan_registry;
                 let result = args
                     .get("reason")
                     .and_then(|v| v.as_str())
@@ -567,7 +580,7 @@ pub async fn run_agent_loop(
                     obj.insert("_tool_call_id".to_string(), serde_json::Value::String(tc.id.clone()));
                 }
 
-                let tool = active_registry.get("sub_agent");
+                let tool = active_sub_agent_registry.get("sub_agent");
                 let tc_id = tc.id.clone();
                 let tc_name = tc.name.clone();
                 let tc_arguments = tc.arguments.clone();
@@ -779,8 +792,7 @@ async fn execute_tool(
     });
 }
 
-/// Streamlined agent loop for sub-agents. No plan mode, no sub_agent tool, no queued messages.
-/// Shares approval state with parent via `session_approved`.
+/// Streamlined agent loop for sub-agents. Shares approval state with parent.
 pub async fn run_sub_agent_loop(
     config: AppConfig,
     session: &mut Session,
@@ -803,19 +815,20 @@ pub async fn run_sub_agent_loop(
         .canonicalize()
         .unwrap_or_else(|_| std::path::PathBuf::from(&session.working_directory));
 
-    let system_prompt = build_sub_agent_system_prompt(
-        config.system_prompt.as_deref(),
-        &session.working_directory,
-        &config.provider.model,
-        &config,
-    )
-    .await;
-
     loop {
         if cancel_rx.try_recv().is_ok() {
             let _ = event_tx.send(AgentEvent::Cancelled);
             break;
         }
+
+        let system_prompt = build_sub_agent_system_prompt(
+            config.system_prompt.as_deref(),
+            &session.working_directory,
+            &config.provider.model,
+            config.plan_mode,
+            &config,
+        )
+        .await;
 
         let _ = event_tx.send(AgentEvent::Thinking);
 
@@ -981,6 +994,10 @@ pub async fn run_sub_agent_loop(
             ).await;
         }
     }
+}
+
+fn has_incomplete_plan(plan_tasks: &[PlanTask]) -> bool {
+    !plan_tasks.is_empty() && plan_tasks.iter().any(|task| task.status != TaskStatus::Done)
 }
 
 struct PendingToolCall {

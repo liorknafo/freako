@@ -525,20 +525,24 @@ impl App {
             Message::SendMessage => {
                 let text = self.input_text.trim().to_string();
 
-                eprintln!("[SendMessage] plan_pending_review={} is_working={} text={:?}", self.plan_pending_review, self.is_working, text);
-
                 if self.plan_pending_review {
                     if self.is_working {
-                        eprintln!("[SendMessage] blocked: still working");
                         return Task::none();
-                    }
-
-                    if text.is_empty() {
-                        return Task::done(Message::AcceptPlan);
                     }
 
                     self.plan_pending_review = false;
                     self.clear_input();
+
+                    if text.is_empty() {
+                        self.config.plan_mode = false;
+                        let _ = freako_core::config::save_config(&self.config);
+                        self.push_message(
+                            ConversationMessage::user("Plan approved. Execute it."),
+                            markdown::Content::parse("Plan approved. Execute it."),
+                        );
+                        return self.start_agent_run();
+                    }
+
                     return self.start_agent_run_with_message(text);
                 }
 
