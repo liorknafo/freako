@@ -29,15 +29,54 @@ fn status_indicator(status: &TaskStatus) -> Element<'static, Message> {
     }
 }
 
-pub fn view(app: &App) -> Element<'_, Message> {
-    let is_review = app.plan_pending_review;
-    let is_execute = !app.config.plan_mode && !app.plan_pending_review && !app.plan_tasks.is_empty();
+/// Thin collapsed strip shown on the right edge when the panel is hidden.
+fn collapsed_view() -> Element<'static, Message> {
+    let btn = button(
+        text("\u{25C0} Plan").size(12).color(AppTheme::plan_accent()),
+    )
+    .on_press(Message::TogglePlanPanel)
+    .padding([12, 8])
+    .height(Length::Fill)
+    .style(|_t: &iced::Theme, status| {
+        let bg = match status {
+            button::Status::Hovered => AppTheme::sidebar_item_hover(),
+            _ => Color::TRANSPARENT,
+        };
+        button::Style {
+            background: Some(bg.into()),
+            ..Default::default()
+        }
+    });
 
-    // Header
+    container(btn)
+        .width(Length::Fixed(32.0))
+        .height(Length::Fill)
+        .style(|_t: &iced::Theme| container::Style {
+            background: Some(AppTheme::sidebar_bg().into()),
+            border: iced::Border {
+                width: 1.0,
+                color: AppTheme::border_subtle(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+pub fn view(app: &App) -> Element<'_, Message> {
+    // When hidden: render a thin clickable strip so the user can reopen it
+    if !app.show_plan_panel {
+        return collapsed_view();
+    }
+
+    let is_review = app.plan_pending_review;
+    let is_execute = !app.config.plan_mode && !app.plan_pending_review;
+
+    // Header row: "Plan" title + collapse button
     let header = row![
         text("Plan").size(14).color(AppTheme::plan_accent()),
         iced::widget::space::horizontal().width(Length::Fill),
-        button(text("\u{2715}").size(12).color(AppTheme::text_muted()))
+        button(text("\u{25B6} Hide").size(11).color(AppTheme::text_muted()))
             .on_press(Message::TogglePlanPanel)
             .padding([4, 8])
             .style(|_t: &iced::Theme, status| {
@@ -63,7 +102,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     for task in &app.plan_tasks {
         let is_expanded = app.plan_task_expanded.contains(&task.id);
-        let chevron = if is_expanded { "\u{25BC}" } else { "\u{25B6}" }; // down / right triangle
+        let chevron = if is_expanded { "\u{25BC}" } else { "\u{25B6}" };
         let task_id = task.id.clone();
 
         let mut header_row = row![
@@ -72,7 +111,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .spacing(8)
         .align_y(iced::Alignment::Center);
 
-        // Show status indicator in execute mode
         if is_execute {
             header_row = header_row.push(status_indicator(&task.status));
         }
@@ -129,7 +167,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     if is_review {
         let accept_btn = button(
-            text("Accept Plan").size(13).color(Color::WHITE),
+            text("Accept Plan").size(13).color(Color::BLACK),
         )
         .on_press(Message::AcceptPlan)
         .padding([8, 16])

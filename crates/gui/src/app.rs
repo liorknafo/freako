@@ -1566,7 +1566,7 @@ impl App {
             container(main_col).width(Length::Fill),
         ];
 
-        if self.show_plan_panel && !self.plan_tasks.is_empty() {
+        if !self.plan_tasks.is_empty() {
             layout_row = layout_row.push(plan_panel::view(self));
         }
 
