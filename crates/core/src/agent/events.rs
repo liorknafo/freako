@@ -59,6 +59,7 @@ pub enum AgentEvent {
     PlanReadyForReview {
         content: String,
     },
+    Compacting,
     Done,
     Cancelled,
     Error(String),

@@ -5,7 +5,6 @@ use iced::{Element, Length, Subscription, Task};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use freako_core::agent::context::compact_messages;
 use freako_core::agent::events::AgentEvent;
 use freako_core::agent::loop_::{run_agent_loop, ApprovalResponse};
 use freako_core::config;
@@ -188,6 +187,7 @@ pub enum Message {
     AddSkillsSource,
     RemoveSkillsSource(usize),
     CompactNow,
+    CompactionComplete(Option<Vec<freako_core::session::types::ConversationMessage>>),
     SystemPromptChanged(String),
     MemoryBankProjectChanged(String),
     MemoryBankGlobalChanged(String),
@@ -879,16 +879,42 @@ impl App {
                 if original_len < 3 {
                     return Task::none();
                 }
-                // Manual compact: force compaction regardless of threshold
+                self.is_thinking = true;
+                self.current_tool = Some("Compacting context...".to_string());
+                let messages = self.session.messages.clone();
+                let provider_config = self.config.provider.clone();
                 let mut forced_config = self.config.context.clone();
                 forced_config.enable_compaction = true;
                 forced_config.compact_after_messages = 0; // always trigger
-                let compacted = compact_messages(&self.session.messages, &forced_config);
-                if compacted.len() < original_len {
-                    self.session.messages = compacted;
-                    self.rebuild_message_contents();
-                    self.save_current_session();
-                    return scroll_to_bottom();
+                return Task::perform(
+                    async move {
+                        let provider = match freako_core::provider::build_provider(&provider_config) {
+                            Ok(p) => p,
+                            Err(_) => return None,
+                        };
+                        freako_core::agent::context::llm_compact_messages(
+                            &messages,
+                            &forced_config,
+                            provider.as_ref(),
+                            &provider_config.model,
+                            provider_config.max_tokens,
+                        )
+                        .await
+                        .ok()
+                    },
+                    Message::CompactionComplete,
+                );
+            }
+            Message::CompactionComplete(result) => {
+                self.is_thinking = false;
+                self.current_tool = None;
+                if let Some(compacted) = result {
+                    if compacted.len() < self.session.messages.len() {
+                        self.session.messages = compacted;
+                        self.rebuild_message_contents();
+                        self.save_current_session();
+                        return scroll_to_bottom();
+                    }
                 }
                 Task::none()
             }
@@ -1360,10 +1386,14 @@ impl App {
                     self.rebuild_visible_contents();
                 }
             }
+            AgentEvent::Compacting => {
+                self.is_thinking = true;
+                self.current_tool = Some("Compacting context...".to_string());
+            }
             AgentEvent::Done => {
                 self.flush_streaming_text();
-                // The agent loop has already added the final assistant message to the session.
-                // Rebuild the display to show it.
+                // The agent loop has already added the final assistant message
+                // and performed LLM-based compaction if needed.
                 self.rebuild_visible_contents();
                 self.is_at_bottom = true; // ensure auto-scroll to show final message
                 self.is_working = false;
@@ -1378,18 +1408,6 @@ impl App {
                 self.approval_tx = None;
                 self.cancel_tx = None;
                 self.queued_message_tx = None;
-                // Auto-compact if threshold is exceeded (count parts/interactions, not just messages)
-                let interaction_count: usize = self.session.messages.iter().map(|m| m.parts.len().max(1)).sum();
-                if self.config.context.enable_compaction
-                    && interaction_count > self.config.context.compact_after_messages
-                {
-                    let original_len = self.session.messages.len();
-                    let compacted = compact_messages(&self.session.messages, &self.config.context);
-                    if compacted.len() < original_len {
-                        self.session.messages = compacted;
-                        self.rebuild_message_contents();
-                    }
-                }
                 // Auto-save after completion
                 self.save_current_session();
             }

@@ -149,6 +149,9 @@ struct App {
     /// Channel for receiving OAuth results from background task.
     oauth_result_tx: mpsc::UnboundedSender<Result<freako_core::config::types::OAuthCredentials, String>>,
     oauth_result_rx: mpsc::UnboundedReceiver<Result<freako_core::config::types::OAuthCredentials, String>>,
+    /// Channel for receiving LLM compaction results from background task.
+    compact_result_tx: mpsc::UnboundedSender<Vec<freako_core::session::types::ConversationMessage>>,
+    compact_result_rx: mpsc::UnboundedReceiver<Vec<freako_core::session::types::ConversationMessage>>,
     queued_message: Option<String>,
     queued_message_tx: Option<mpsc::UnboundedSender<String>>,
     cancel_tx: Option<mpsc::UnboundedSender<()>>,
@@ -499,6 +502,7 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
 
     let (_event_tx, event_rx) = mpsc::unbounded_channel();
     let (oauth_tx, oauth_rx) = mpsc::unbounded_channel();
+    let (compact_tx, compact_rx) = mpsc::unbounded_channel();
     let (approval_tx, approval_rx_dummy) = mpsc::unbounded_channel::<ApprovalResponse>();
     drop(approval_rx_dummy);
 
@@ -538,6 +542,8 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
         pending_images: Vec::new(),
         oauth_result_tx: oauth_tx,
         oauth_result_rx: oauth_rx,
+        compact_result_tx: compact_tx,
+        compact_result_rx: compact_rx,
         queued_message: None,
         queued_message_tx: None,
         cancel_tx: None,
@@ -617,18 +623,32 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                             }
                         }
                         KeyCode::Char('c') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            use freako_core::agent::context::compact_messages;
                             let original_len = app.session.messages.len();
                             if original_len >= 3 {
+                                app.status_message = "Compacting context...".into();
+                                app.is_thinking = true;
+                                app.current_tool = Some("Compacting context...".to_string());
+                                let messages = app.session.messages.clone();
+                                let provider_config = app.config.provider.clone();
                                 let mut forced = app.config.context.clone();
                                 forced.enable_compaction = true;
                                 forced.compact_after_messages = 0;
-                                let compacted = compact_messages(&app.session.messages, &forced);
-                                if compacted.len() < original_len {
-                                    app.session.messages = compacted;
-                                    app.status_message = format!("Compacted {} → {} messages", original_len, app.session.messages.len());
-                                    save_session(&mut app);
-                                }
+                                let tx = app.compact_result_tx.clone();
+                                tokio::spawn(async move {
+                                    let provider = match freako_core::provider::build_provider(&provider_config) {
+                                        Ok(p) => p,
+                                        Err(_) => return,
+                                    };
+                                    if let Ok(compacted) = freako_core::agent::context::llm_compact_messages(
+                                        &messages,
+                                        &forced,
+                                        provider.as_ref(),
+                                        &provider_config.model,
+                                        provider_config.max_tokens,
+                                    ).await {
+                                        let _ = tx.send(compacted);
+                                    }
+                                });
                             }
                         }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -921,6 +941,20 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
 
         app.spinner_tick = app.spinner_tick.wrapping_add(1) % 8;
 
+        // Poll for compaction results
+        if let Ok(compacted) = app.compact_result_rx.try_recv() {
+            let original_len = app.session.messages.len();
+            if compacted.len() < original_len {
+                app.session.messages = compacted;
+                app.status_message = format!("Compacted {} → {} messages", original_len, app.session.messages.len());
+                save_session(&mut app);
+            } else {
+                app.status_message = "Nothing to compact".into();
+            }
+            app.is_thinking = false;
+            app.current_tool = None;
+        }
+
         // Poll for OAuth results
         if let Ok(result) = app.oauth_result_rx.try_recv() {
             match result {
@@ -940,6 +974,11 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                 AgentEvent::Thinking => {
                     app.is_thinking = true;
                     app.status_message = "Thinking…".into();
+                }
+                AgentEvent::Compacting => {
+                    app.is_thinking = true;
+                    app.current_tool = Some("Compacting context...".to_string());
+                    app.status_message = "Compacting context…".into();
                 }
                 AgentEvent::StreamDelta(text) => {
                     app.is_thinking = false;
