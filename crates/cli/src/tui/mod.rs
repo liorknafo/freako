@@ -739,22 +739,23 @@ pub async fn run(config: AppConfig, working_directory: String) -> Result<()> {
                                 app.current_tool = Some("Compacting context...".to_string());
                                 let messages = app.session.messages.clone();
                                 let provider_config = app.config.provider.clone();
-                                let mut forced = app.config.context.clone();
-                                forced.enable_compaction = true;
-                                forced.compact_after_messages = 0;
+                                let context_config = app.config.context.clone();
                                 let tx = app.compact_result_tx.clone();
                                 tokio::spawn(async move {
                                     let provider = match freako_core::provider::build_provider(&provider_config) {
                                         Ok(p) => p,
                                         Err(_) => return,
                                     };
-                                    if let Ok(compacted) = freako_core::agent::context::llm_compact_messages(
-                                        &messages,
-                                        &forced,
-                                        provider.as_ref(),
+                                    let usage = std::sync::Arc::new(std::sync::Mutex::new(
+                                        freako_core::provider::types::TokenUsage::default(),
+                                    ));
+                                    let compaction = freako_core::agent::compaction::Compaction::new(
+                                        &context_config,
                                         &provider_config.model,
                                         provider_config.max_tokens,
-                                    ).await {
+                                        usage,
+                                    );
+                                    if let Ok(compacted) = compaction.compact(&messages, provider.as_ref()).await {
                                         let _ = tx.send(compacted);
                                     }
                                 });

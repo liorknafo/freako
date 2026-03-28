@@ -559,13 +559,6 @@ pub(crate) fn fallback_tool_summary(name: &str, args: &serde_json::Value) -> Str
 pub(super) fn format_messages(messages: &[ConversationMessage]) -> Vec<String> {
     let mut out = Vec::new();
     for message in messages {
-        let role = match message.role {
-            Role::User => "User",
-            Role::Assistant => "Assistant",
-            Role::Tool => "Tool",
-            Role::System => "System",
-        };
-
         let mut parts = Vec::new();
         for part in &message.parts {
             match part {
@@ -586,7 +579,7 @@ pub(super) fn format_messages(messages: &[ConversationMessage]) -> Vec<String> {
             }
         }
 
-        out.push(format!("{}: {}", role, parts.join("\n")));
+        out.push(format!("{}: {}", message.role, parts.join("\n")));
     }
     out
 }

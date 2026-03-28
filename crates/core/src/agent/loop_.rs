@@ -4,7 +4,8 @@ use std::sync::Arc;
 use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 
-use crate::agent::context::{build_request, llm_compact_messages};
+use crate::agent::compaction::Compaction;
+use crate::agent::context::build_request;
 use crate::agent::events::{
     AgentEvent, PlanTask, TaskStatus,
     ADD_TASK_TOOL_NAME, DELETE_TASK_TOOL_NAME, EDIT_TASK_TOOL_NAME,
@@ -109,10 +110,8 @@ pub async fn run_agent_loop(
             &config.provider.model,
             config.provider.max_tokens,
             config.provider.temperature,
-            config.provider.thinking_effort.as_deref(),
+            config.provider.thinking_effort,
             Some(&system_prompt),
-            &config.context,
-            &config.memory,
         );
 
         let mut attempt = 0usize;
@@ -259,24 +258,25 @@ pub async fn run_agent_loop(
                 continue;
             }
 
-            // LLM-based compaction before signaling done
-            let interaction_count: usize =
-                session.messages.iter().map(|m| m.parts.len().max(1)).sum();
+            // LLM-based compaction when input tokens exceed threshold
             if config.context.enable_compaction
-                && interaction_count > config.context.compact_after_messages
+                && usage.input_tokens > config.context.compact_after_input_tokens
             {
                 let _ = event_tx.send(AgentEvent::Compacting);
-                match llm_compact_messages(
-                    &session.messages,
+                let compaction_usage = std::sync::Arc::new(std::sync::Mutex::new(TokenUsage::default()));
+                let compaction = Compaction::new(
                     &config.context,
-                    provider.as_ref(),
                     &config.provider.model,
                     config.provider.max_tokens,
-                )
-                .await
-                {
+                    compaction_usage.clone(),
+                );
+                match compaction.compact(&session.messages, provider.as_ref()).await {
                     Ok(compacted) if compacted.len() < session.messages.len() => {
                         session.messages = compacted;
+                        let _ = event_tx.send(AgentEvent::ResponseComplete {
+                            finish_reason: Some("compaction".to_string()),
+                            usage: compaction_usage.lock().unwrap().clone(),
+                        });
                     }
                     Err(e) => {
                         let _ = event_tx.send(AgentEvent::Error(format!(
@@ -838,10 +838,8 @@ pub async fn run_sub_agent_loop(
             &config.provider.model,
             config.provider.max_tokens,
             config.provider.temperature,
-            config.provider.thinking_effort.as_deref(),
+            config.provider.thinking_effort,
             Some(&system_prompt),
-            &config.context,
-            &config.memory,
         );
 
         let mut attempt = 0usize;

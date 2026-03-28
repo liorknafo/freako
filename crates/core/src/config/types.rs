@@ -96,9 +96,8 @@ pub struct ProviderConfig {
     pub model: String,
     pub max_tokens: u32,
     pub temperature: Option<f32>,
-    /// Thinking/reasoning effort: "off", "low", "medium", "high"
     #[serde(default)]
-    pub thinking_effort: Option<String>,
+    pub thinking_effort: Option<crate::provider::types::ThinkingEffort>,
 }
 
 impl ProviderConfig {
@@ -186,21 +185,22 @@ impl Default for UiConfig {
 pub struct ContextConfig {
     #[serde(default = "default_enable_compaction")]
     pub enable_compaction: bool,
-    #[serde(default = "default_compact_after_messages")]
-    pub compact_after_messages: usize,
+    /// Trigger compaction when the last LLM request consumed more than this many input tokens.
+    #[serde(default = "default_compact_after_input_tokens")]
+    pub compact_after_input_tokens: u32,
     #[serde(default = "default_keep_recent_messages")]
     pub keep_recent_messages: usize,
 }
 
 fn default_enable_compaction() -> bool { true }
-fn default_compact_after_messages() -> usize { 40 }
+fn default_compact_after_input_tokens() -> u32 { 300_000 }
 fn default_keep_recent_messages() -> usize { 12 }
 
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             enable_compaction: default_enable_compaction(),
-            compact_after_messages: default_compact_after_messages(),
+            compact_after_input_tokens: default_compact_after_input_tokens(),
             keep_recent_messages: default_keep_recent_messages(),
         }
     }

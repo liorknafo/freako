@@ -34,7 +34,7 @@ fn build_messages(request: &LLMRequest) -> Vec<serde_json::Value> {
 
     for msg in &request.messages {
         match msg.role {
-            LLMRole::User => {
+            Role::User => {
                 let mut content = Vec::new();
                 for part in &msg.content {
                     match part {
@@ -56,7 +56,7 @@ fn build_messages(request: &LLMRequest) -> Vec<serde_json::Value> {
                 }
                 messages.push(json!({ "role": "user", "content": content }));
             }
-            LLMRole::Assistant => {
+            Role::Assistant => {
                 let mut content = Vec::new();
                 for part in &msg.content {
                     match part {
@@ -75,7 +75,7 @@ fn build_messages(request: &LLMRequest) -> Vec<serde_json::Value> {
                 }
                 messages.push(json!({ "role": "assistant", "content": content }));
             }
-            LLMRole::Tool => {
+            Role::Tool => {
                 let mut content = Vec::new();
                 for part in &msg.content {
                     if let LLMContent::ToolResult { tool_call_id, content: result_content, is_error } = part {
@@ -102,7 +102,7 @@ fn build_messages(request: &LLMRequest) -> Vec<serde_json::Value> {
                     messages.push(json!({ "role": "user", "content": serde_json::Value::Array(content) }));
                 }
             }
-            LLMRole::System => {}
+            Role::System => {}
         }
     }
 
@@ -274,21 +274,18 @@ impl LLMProvider for AnthropicProvider {
 
         // Thinking/reasoning effort support
         if let Some(effort) = &request.thinking_effort {
-            if effort != "off" {
-                let budget: u32 = match effort.as_str() {
-                    "low" => 5000,
-                    "medium" => 10000,
-                    "high" => 30000,
-                    _ => 10000, // default to medium for unknown values
-                };
-                body["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
-                // Anthropic requires temperature=1 when thinking is enabled
-                body["temperature"] = json!(1);
-                // Ensure max_tokens is at least budget + 4096
-                let min_max_tokens = budget + 4096;
-                if request.max_tokens < min_max_tokens {
-                    body["max_tokens"] = json!(min_max_tokens);
-                }
+            let budget: u32 = match effort {
+                ThinkingEffort::Low => 5000,
+                ThinkingEffort::Medium => 10000,
+                ThinkingEffort::High => 30000,
+            };
+            body["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
+            // Anthropic requires temperature=1 when thinking is enabled
+            body["temperature"] = json!(1);
+            // Ensure max_tokens is at least budget + 4096
+            let min_max_tokens = budget + 4096;
+            if request.max_tokens < min_max_tokens {
+                body["max_tokens"] = json!(min_max_tokens);
             }
         }
 

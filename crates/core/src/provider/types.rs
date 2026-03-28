@@ -1,4 +1,34 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl fmt::Display for ThinkingEffort {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Low => write!(f, "low"),
+            Self::Medium => write!(f, "medium"),
+            Self::High => write!(f, "high"),
+        }
+    }
+}
+
+impl ThinkingEffort {
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct LLMRequest {
@@ -8,22 +38,14 @@ pub struct LLMRequest {
     pub max_tokens: u32,
     pub temperature: Option<f32>,
     pub system_prompt: Option<String>,
-    /// Thinking/reasoning effort: "off", "low", "medium", "high"
-    pub thinking_effort: Option<String>,
+    pub thinking_effort: Option<ThinkingEffort>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum LLMRole {
-    System,
-    User,
-    Assistant,
-    Tool,
-}
+pub use crate::session::types::Role;
 
 #[derive(Debug, Clone)]
 pub struct LLMMessage {
-    pub role: LLMRole,
+    pub role: Role,
     pub content: Vec<LLMContent>,
 }
 

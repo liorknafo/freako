@@ -38,13 +38,7 @@ pub fn maybe_generate_session_title(
             continue;
         }
 
-        let prefix = match message.role {
-            Role::User => "User",
-            Role::Assistant => "Assistant",
-            Role::Tool => "Tool",
-            Role::System => "System",
-        };
-        chunks.push(format!("{prefix}: {normalized}"));
+        chunks.push(format!("{}: {normalized}", message.role));
     }
 
     if chunks.is_empty() {

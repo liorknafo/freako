@@ -397,14 +397,14 @@ fn render_status_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     let out_tok = app.session.total_output_tokens;
 
     let compaction_str = if app.config.context.enable_compaction {
-        let trigger_at = app.config.context.compact_after_messages.max(1);
-        let msg_count = app.session.messages.len();
-        if msg_count >= trigger_at {
-            " │ ⚡ 100% compaction active".to_string()
+        let trigger_at = app.config.context.compact_after_input_tokens.max(1);
+        let current = app.session.total_input_tokens;
+        if current >= trigger_at {
+            " │ ⚡ compaction pending".to_string()
         } else {
-            let pct = (msg_count.saturating_mul(100) / trigger_at).min(100);
-            let remaining = trigger_at.saturating_sub(msg_count);
-            format!(" │ 📊 {}% ({} until compact)", pct, remaining)
+            let pct = ((current as u64).saturating_mul(100) / trigger_at as u64).min(100);
+            let remaining = trigger_at.saturating_sub(current);
+            format!(" │ 📊 {}% ({}k tokens until compact)", pct, remaining / 1000)
         }
     } else {
         String::new()
@@ -424,11 +424,11 @@ fn render_status_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     };
 
     let plan_indicator = if app.config.plan_mode { " │ 📋 PLAN" } else { "" };
-    let thinking_indicator = match app.config.provider.thinking_effort.as_deref() {
-        Some("low") => " │ 🧠 low",
-        Some("medium") => " │ 🧠 med",
-        Some("high") => " │ 🧠 high",
-        _ => "",
+    let thinking_indicator = match app.config.provider.thinking_effort {
+        Some(freako_core::provider::types::ThinkingEffort::Low) => " │ 🧠 low",
+        Some(freako_core::provider::types::ThinkingEffort::Medium) => " │ 🧠 med",
+        Some(freako_core::provider::types::ThinkingEffort::High) => " │ 🧠 high",
+        None => "",
     };
     let bar_text = format!(" {} / {} │ in:{} out:{}{}{}{}{}", provider, model, in_tok, out_tok, compaction_str, plan_indicator, thinking_indicator, status_str);
     let status_bg = Color::Rgb(30, 22, 48);

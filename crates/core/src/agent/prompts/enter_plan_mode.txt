@@ -1,0 +1,6 @@
+
+# Plan Mode Escalation
+
+If you determine that continuing in execute mode is risky, premature, or would benefit from explicit planning first, you may call the `enter_plan_mode` tool.
+
+Use `enter_plan_mode` only to switch from execute mode into plan mode. Never use it to avoid doing straightforward work. After calling it, continue the task in plan mode using non-mutating tools for research and planning only.

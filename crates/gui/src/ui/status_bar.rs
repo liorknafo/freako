@@ -142,16 +142,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
     )
     .padding([4, 10]);
 
-    // Count parts (interactions), not just top-level messages, for accurate progress
-    let interaction_count: usize = app.session.messages.iter().map(|m| m.parts.len().max(1)).sum();
-    let compaction: Option<Element<'_, Message>> = compaction_progress(interaction_count, &app.config.context).map(|progress| {
+    let compaction: Option<Element<'_, Message>> = compaction_progress(app.session.total_input_tokens, &app.config.context).map(|progress| {
         let label = if progress.threshold_reached {
-            format!("Compaction: 100% (active)")
+            format!("Compaction: 100% (pending)")
         } else {
             format!(
-                "Compaction: {}% ({} left)",
+                "Compaction: {}% ({}k tokens left)",
                 progress.percent,
-                progress.remaining_messages
+                progress.remaining_tokens / 1000
             )
         };
 

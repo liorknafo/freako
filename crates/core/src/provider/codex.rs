@@ -55,14 +55,14 @@ fn build_input(request: &LLMRequest) -> Vec<serde_json::Value> {
     let mut all_result_ids = HashSet::new();
     for msg in &request.messages {
         match msg.role {
-            LLMRole::Assistant => {
+            Role::Assistant => {
                 for part in &msg.content {
                     if let LLMContent::ToolCall { id, .. } = part {
                         all_call_ids.insert(normalize_call_id(id));
                     }
                 }
             }
-            LLMRole::Tool => {
+            Role::Tool => {
                 for part in &msg.content {
                     if let LLMContent::ToolResult { tool_call_id, .. } = part {
                         all_result_ids.insert(normalize_call_id(tool_call_id));
@@ -77,7 +77,7 @@ fn build_input(request: &LLMRequest) -> Vec<serde_json::Value> {
 
     for msg in &request.messages {
         match msg.role {
-            LLMRole::User => {
+            Role::User => {
                 let mut content = Vec::new();
                 for part in &msg.content {
                     match part {
@@ -100,7 +100,7 @@ fn build_input(request: &LLMRequest) -> Vec<serde_json::Value> {
                     "content": content
                 }));
             }
-            LLMRole::Assistant => {
+            Role::Assistant => {
                 let mut text_content = Vec::new();
                 for part in &msg.content {
                     if let LLMContent::Text(text) = part {
@@ -136,7 +136,7 @@ fn build_input(request: &LLMRequest) -> Vec<serde_json::Value> {
                     }
                 }
             }
-            LLMRole::Tool => {
+            Role::Tool => {
                 for part in &msg.content {
                     if let LLMContent::ToolResult { tool_call_id, content, .. } = part {
                         let fc_id = normalize_call_id(tool_call_id);
@@ -152,7 +152,7 @@ fn build_input(request: &LLMRequest) -> Vec<serde_json::Value> {
                     }
                 }
             }
-            LLMRole::System => {}
+            Role::System => {}
         }
     }
 
@@ -254,9 +254,7 @@ impl LLMProvider for CodexProvider {
 
         // Thinking/reasoning effort support
         if let Some(effort) = &request.thinking_effort {
-            if effort != "off" {
-                body["reasoning"] = json!({"effort": effort});
-            }
+            body["reasoning"] = json!({"effort": effort.to_string()});
         }
 
         let url = format!("{}/responses", CODEX_BASE_URL);

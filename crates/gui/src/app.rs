@@ -118,31 +118,31 @@ pub struct App {
 #[derive(Debug, Clone, Copy)]
 pub struct CompactionProgress {
     pub percent: u8,
-    pub remaining_messages: usize,
+    pub remaining_tokens: u32,
     pub threshold_reached: bool,
 }
 
-pub fn compaction_progress(message_count: usize, context: &ContextConfig) -> Option<CompactionProgress> {
+pub fn compaction_progress(input_tokens: u32, context: &ContextConfig) -> Option<CompactionProgress> {
     if !context.enable_compaction {
         return None;
     }
 
-    let trigger_at = context.compact_after_messages.max(1);
-    let threshold_reached = message_count > trigger_at;
-    let remaining_messages = if threshold_reached {
+    let trigger_at = context.compact_after_input_tokens.max(1);
+    let threshold_reached = input_tokens > trigger_at;
+    let remaining_tokens = if threshold_reached {
         0
     } else {
-        trigger_at.saturating_sub(message_count)
+        trigger_at.saturating_sub(input_tokens)
     };
     let percent = if threshold_reached {
         100
     } else {
-        ((message_count.saturating_mul(100)) / trigger_at).min(100) as u8
+        ((input_tokens as u64).saturating_mul(100) / trigger_at as u64).min(100) as u8
     };
 
     Some(CompactionProgress {
         percent,
-        remaining_messages,
+        remaining_tokens,
         threshold_reached,
     })
 }
@@ -893,8 +893,8 @@ impl App {
             }
 
             Message::CompactAfterMessagesChanged(val) => {
-                if let Ok(n) = val.parse::<usize>() {
-                    self.config.context.compact_after_messages = n.max(1);
+                if let Ok(n) = val.parse::<u32>() {
+                    self.config.context.compact_after_input_tokens = n.max(1);
                 }
                 Task::none()
             }
@@ -945,24 +945,23 @@ impl App {
                 self.current_tool = Some("Compacting context...".to_string());
                 let messages = self.session.messages.clone();
                 let provider_config = self.config.provider.clone();
-                let mut forced_config = self.config.context.clone();
-                forced_config.enable_compaction = true;
-                forced_config.compact_after_messages = 0; // always trigger
+                let context_config = self.config.context.clone();
                 return Task::perform(
                     async move {
                         let provider = match freako_core::provider::build_provider(&provider_config) {
                             Ok(p) => p,
                             Err(_) => return None,
                         };
-                        freako_core::agent::context::llm_compact_messages(
-                            &messages,
-                            &forced_config,
-                            provider.as_ref(),
+                        let usage = std::sync::Arc::new(std::sync::Mutex::new(
+                            freako_core::provider::types::TokenUsage::default(),
+                        ));
+                        let compaction = freako_core::agent::compaction::Compaction::new(
+                            &context_config,
                             &provider_config.model,
                             provider_config.max_tokens,
-                        )
-                        .await
-                        .ok()
+                            usage,
+                        );
+                        compaction.compact(&messages, provider.as_ref()).await.ok()
                     },
                     Message::CompactionComplete,
                 );

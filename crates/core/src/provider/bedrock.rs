@@ -74,7 +74,7 @@ fn build_messages(request: &LLMRequest) -> Result<Vec<Message>, ProviderError> {
     let mut messages = Vec::new();
     for msg in &request.messages {
         match msg.role {
-            LLMRole::User => {
+            Role::User => {
                 // Note: LLMContent::Image is not yet supported for Bedrock.
                 // Image content parts are skipped; only text is sent.
                 let text: String = msg.content.iter().filter_map(|c| c.text()).collect::<Vec<_>>().join("");
@@ -86,7 +86,7 @@ fn build_messages(request: &LLMRequest) -> Result<Vec<Message>, ProviderError> {
                         .map_err(|e| ProviderError::Bedrock(e.to_string()))?,
                 );
             }
-            LLMRole::Assistant => {
+            Role::Assistant => {
                 let mut builder = Message::builder().role(ConversationRole::Assistant);
                 for part in &msg.content {
                     match part {
@@ -109,7 +109,7 @@ fn build_messages(request: &LLMRequest) -> Result<Vec<Message>, ProviderError> {
                 }
                 messages.push(builder.build().map_err(|e| ProviderError::Bedrock(e.to_string()))?);
             }
-            LLMRole::Tool => {
+            Role::Tool => {
                 let mut builder = Message::builder().role(ConversationRole::User);
                 for part in &msg.content {
                     if let LLMContent::ToolResult { tool_call_id, content, is_error } = part {
@@ -126,7 +126,7 @@ fn build_messages(request: &LLMRequest) -> Result<Vec<Message>, ProviderError> {
                 }
                 messages.push(builder.build().map_err(|e| ProviderError::Bedrock(e.to_string()))?);
             }
-            LLMRole::System => {}
+            Role::System => {}
         }
     }
     Ok(messages)

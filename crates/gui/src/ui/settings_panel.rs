@@ -279,8 +279,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .padding(10),
             ))
             .push(labeled_field(
-                "COMPACT AFTER MESSAGES",
-                text_input("40", &app.config.context.compact_after_messages.to_string())
+                "COMPACT AFTER INPUT TOKENS",
+                text_input("300000", &app.config.context.compact_after_input_tokens.to_string())
                     .on_input(Message::CompactAfterMessagesChanged)
                     .padding(10),
             ))

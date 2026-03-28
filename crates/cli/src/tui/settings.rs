@@ -47,7 +47,7 @@ pub enum SettingsField {
     ThinkingEffort,
     // Context
     EnableCompaction,
-    CompactAfterMessages,
+    CompactAfterInputTokens,
     KeepRecentMessages,
     // Features
     EnableSkills,
@@ -83,7 +83,7 @@ impl SettingsField {
             Self::Temperature => "Temperature",
             Self::ThinkingEffort => "Thinking Effort",
             Self::EnableCompaction => "Auto-compact",
-            Self::CompactAfterMessages => "Compact after messages",
+            Self::CompactAfterInputTokens => "Compact after input tokens",
             Self::KeepRecentMessages => "Keep recent messages",
             Self::EnableSkills => "Skills",
             Self::EnableMemory => "Memory",
@@ -106,7 +106,7 @@ impl SettingsField {
             Self::AnthropicApiKey | Self::AnthropicGetKey => "Anthropic Connection".to_string(),
             Self::AwsRegion | Self::AwsProfile => "AWS Bedrock".to_string(),
             Self::MaxTokens | Self::Temperature | Self::ThinkingEffort => "Generation".to_string(),
-            Self::EnableCompaction | Self::CompactAfterMessages | Self::KeepRecentMessages => "Context".to_string(),
+            Self::EnableCompaction | Self::CompactAfterInputTokens | Self::KeepRecentMessages => "Context".to_string(),
             Self::EnableSkills | Self::EnableMemory => "Features".to_string(),
             Self::SystemPrompt => "Additional Instructions".to_string(),
         }
@@ -131,7 +131,7 @@ impl SettingsField {
             Self::AnthropicApiKey, Self::AnthropicGetKey,
             Self::AwsRegion, Self::AwsProfile,
             Self::MaxTokens, Self::Temperature, Self::ThinkingEffort,
-            Self::EnableCompaction, Self::CompactAfterMessages, Self::KeepRecentMessages,
+            Self::EnableCompaction, Self::CompactAfterInputTokens, Self::KeepRecentMessages,
             Self::EnableSkills, Self::EnableMemory,
             Self::SystemPrompt,
         ]
@@ -276,7 +276,7 @@ fn apply_select(config: &mut AppConfig, field: SettingsField, value: &str) {
         }
         SettingsField::Model => config.provider.model = value.to_string(),
         SettingsField::ThinkingEffort => {
-            config.provider.thinking_effort = if value == "off" { None } else { Some(value.to_string()) };
+            config.provider.thinking_effort = freako_core::provider::types::ThinkingEffort::from_str_opt(value);
         }
         _ => {}
     }
@@ -293,9 +293,9 @@ fn get_field_value(config: &AppConfig, field: SettingsField) -> String {
         SettingsField::AwsProfile => config.provider.aws_profile.clone().unwrap_or_default(),
         SettingsField::MaxTokens => config.provider.max_tokens.to_string(),
         SettingsField::Temperature => config.provider.temperature.map(|t| t.to_string()).unwrap_or_default(),
-        SettingsField::ThinkingEffort => config.provider.thinking_effort.clone().unwrap_or_else(|| "off".to_string()),
+        SettingsField::ThinkingEffort => config.provider.thinking_effort.map(|e| e.to_string()).unwrap_or_else(|| "off".to_string()),
         SettingsField::EnableCompaction => config.context.enable_compaction.to_string(),
-        SettingsField::CompactAfterMessages => config.context.compact_after_messages.to_string(),
+        SettingsField::CompactAfterInputTokens => config.context.compact_after_input_tokens.to_string(),
         SettingsField::KeepRecentMessages => config.context.keep_recent_messages.to_string(),
         SettingsField::SystemPrompt => config.system_prompt.clone().unwrap_or_default(),
         SettingsField::EnableSkills => config.skills.enabled.to_string(),
@@ -324,7 +324,7 @@ fn set_field_value(config: &mut AppConfig, field: SettingsField, value: &str) {
             else if let Ok(v) = value.parse() { config.provider.temperature = Some(v); }
         }
         SettingsField::EnableCompaction => config.context.enable_compaction = parse_bool(value),
-        SettingsField::CompactAfterMessages => { if let Ok(v) = value.parse() { config.context.compact_after_messages = v; } }
+        SettingsField::CompactAfterInputTokens => { if let Ok(v) = value.parse() { config.context.compact_after_input_tokens = v; } }
         SettingsField::KeepRecentMessages => { if let Ok(v) = value.parse() { config.context.keep_recent_messages = v; } }
         SettingsField::SystemPrompt => config.system_prompt = nonempty(value),
         SettingsField::EnableSkills => config.skills.enabled = parse_bool(value),

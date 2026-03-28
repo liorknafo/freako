@@ -72,7 +72,7 @@ fn build_messages(request: &LLMRequest) -> Result<Vec<ChatCompletionRequestMessa
 
     for msg in &request.messages {
         match msg.role {
-            LLMRole::User => {
+            Role::User => {
                 let has_images = msg.content.iter().any(|c| matches!(c, LLMContent::Image { .. }));
                 if has_images {
                     // Build a multi-part content array with text and image parts
@@ -111,7 +111,7 @@ fn build_messages(request: &LLMRequest) -> Result<Vec<ChatCompletionRequestMessa
                     );
                 }
             }
-            LLMRole::Assistant => {
+            Role::Assistant => {
                 let text_parts: String = msg.content.iter().filter_map(|c| c.text()).collect::<Vec<_>>().join("");
                 let tool_calls: Vec<ChatCompletionMessageToolCalls> = msg
                     .content
@@ -143,7 +143,7 @@ fn build_messages(request: &LLMRequest) -> Result<Vec<ChatCompletionRequestMessa
                     builder.build().map_err(|e| ProviderError::OpenAI(e.to_string()))?.into(),
                 );
             }
-            LLMRole::Tool => {
+            Role::Tool => {
                 for part in &msg.content {
                     if let LLMContent::ToolResult { tool_call_id, content, .. } = part {
                         messages.push(
@@ -157,7 +157,7 @@ fn build_messages(request: &LLMRequest) -> Result<Vec<ChatCompletionRequestMessa
                     }
                 }
             }
-            LLMRole::System => {}
+            Role::System => {}
         }
     }
 
