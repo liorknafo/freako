@@ -3,6 +3,7 @@ pub mod chat_view;
 pub mod code_view;
 pub mod diff_view;
 pub mod input_area;
+pub mod plan_panel;
 pub mod settings_panel;
 pub mod sidebar;
 pub mod status_bar;

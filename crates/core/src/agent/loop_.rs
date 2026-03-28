@@ -5,8 +5,10 @@ use tokio::sync::mpsc;
 
 use crate::agent::context::build_request;
 use crate::agent::events::{
-    AgentEvent, EDIT_PLAN_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME, READ_PLAN_TOOL_NAME,
-    REVIEW_PLAN_TOOL_NAME,
+    AgentEvent, PlanTask, TaskStatus,
+    ADD_TASK_TOOL_NAME, EDIT_TASK_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME,
+    READ_PLAN_TOOL_NAME, READ_TASK_TOOL_NAME, REVIEW_PLAN_TOOL_NAME,
+    UPDATE_TASK_STATUS_TOOL_NAME,
 };
 use crate::agent::prompt::build_system_prompt;
 use crate::config::types::AppConfig;
@@ -46,7 +48,8 @@ pub async fn run_agent_loop(
     let registry = ToolRegistry::default_registry(&config);
     let plan_registry = ToolRegistry::plan_registry(&config);
     let mut active_registry = if config.plan_mode { &plan_registry } else { &registry };
-    let mut current_plan = String::new();
+    let mut plan_tasks: Vec<PlanTask> = Vec::new();
+    let mut next_task_id: u32 = 1;
     // Track approved items: tool names for always-approve and file paths for per-file approval
     let mut session_approved: HashSet<String> = HashSet::new();
     let working_dir_path = std::path::Path::new(&session.working_directory)
@@ -262,120 +265,182 @@ pub async fn run_agent_loop(
                 continue;
             }
 
-            if tc.name == EDIT_PLAN_TOOL_NAME {
-                let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("replace");
-                let (result, is_error) = match mode {
-                    "replace" => match args.get("content").and_then(|v| v.as_str()) {
-                        Some(content) => {
-                            current_plan = content.to_string();
-                            ("Plan replaced".to_string(), false)
-                        }
-                        None => ("Missing 'content' for replace mode".to_string(), true),
-                    },
-                    "append" => match args.get("content").and_then(|v| v.as_str()) {
-                        Some(content) => {
-                            if current_plan.is_empty() {
-                                current_plan = content.to_string();
+            if tc.name == ADD_TASK_TOOL_NAME {
+                let header = args.get("header").and_then(|v| v.as_str());
+                let description = args.get("description").and_then(|v| v.as_str());
+                let after_task_id = args.get("after_task_id").and_then(|v| v.as_str());
+
+                let (result, is_error) = match (header, description) {
+                    (Some(header), Some(description)) => {
+                        let id = format!("task-{}", next_task_id);
+                        next_task_id += 1;
+                        let task = PlanTask {
+                            id: id.clone(),
+                            header: header.to_string(),
+                            description: description.to_string(),
+                            status: TaskStatus::NotStarted,
+                        };
+                        if let Some(after_id) = after_task_id {
+                            if let Some(pos) = plan_tasks.iter().position(|t| t.id == after_id) {
+                                plan_tasks.insert(pos + 1, task);
                             } else {
-                                current_plan.push_str(content);
+                                plan_tasks.push(task);
                             }
-                            ("Plan appended".to_string(), false)
+                        } else {
+                            plan_tasks.push(task);
                         }
-                        None => ("Missing 'content' for append mode".to_string(), true),
-                    },
-                    "edit" => {
-                        let old_text = args.get("old_text").and_then(|v| v.as_str());
-                        let new_text = args.get("new_text").and_then(|v| v.as_str());
-                        match (old_text, new_text) {
-                            (Some(old_text), Some(new_text)) => {
-                                let count = current_plan.matches(old_text).count();
-                                if count == 0 {
-                                    ("old_text not found in current plan".to_string(), true)
-                                } else if count > 1 {
-                                    ("old_text found multiple times in current plan".to_string(), true)
-                                } else {
-                                    current_plan = current_plan.replacen(old_text, new_text, 1);
-                                    ("Plan edited".to_string(), false)
-                                }
-                            }
-                            _ => ("Missing 'old_text' or 'new_text' for edit mode".to_string(), true),
-                        }
+                        (format!("Task added: {}", id), false)
                     }
-                    _ => (format!("Unsupported plan edit mode: {}", mode), true),
+                    _ => ("Missing required 'header' or 'description'".to_string(), true),
                 };
 
                 if !is_error {
                     let _ = event_tx.send(AgentEvent::PlanUpdated {
-                        content: current_plan.clone(),
+                        tasks: plan_tasks.clone(),
                     });
                 }
-
                 session.messages.push(ConversationMessage::tool_result(
-                    tc.id.clone(),
-                    tc.name.clone(),
-                    result.clone(),
-                    is_error,
-                    Some(args.clone()),
+                    tc.id.clone(), tc.name.clone(), result.clone(), is_error, Some(args.clone()),
                 ));
                 let _ = event_tx.send(AgentEvent::ToolResult {
-                    tool_call_id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    content: result,
-                    is_error,
-                    arguments: Some(args.clone()),
+                    tool_call_id: tc.id.clone(), name: tc.name.clone(),
+                    content: result, is_error, arguments: Some(args.clone()),
+                });
+                continue;
+            }
+
+            if tc.name == EDIT_TASK_TOOL_NAME {
+                let task_id = args.get("task_id").and_then(|v| v.as_str());
+                let new_header = args.get("header").and_then(|v| v.as_str());
+                let new_description = args.get("description").and_then(|v| v.as_str());
+
+                let (result, is_error) = match task_id {
+                    Some(task_id) => {
+                        if let Some(task) = plan_tasks.iter_mut().find(|t| t.id == task_id) {
+                            if let Some(h) = new_header { task.header = h.to_string(); }
+                            if let Some(d) = new_description { task.description = d.to_string(); }
+                            ("Task edited".to_string(), false)
+                        } else {
+                            (format!("Task not found: {}", task_id), true)
+                        }
+                    }
+                    None => ("Missing required 'task_id'".to_string(), true),
+                };
+
+                if !is_error {
+                    let _ = event_tx.send(AgentEvent::PlanUpdated {
+                        tasks: plan_tasks.clone(),
+                    });
+                }
+                session.messages.push(ConversationMessage::tool_result(
+                    tc.id.clone(), tc.name.clone(), result.clone(), is_error, Some(args.clone()),
+                ));
+                let _ = event_tx.send(AgentEvent::ToolResult {
+                    tool_call_id: tc.id.clone(), name: tc.name.clone(),
+                    content: result, is_error, arguments: Some(args.clone()),
+                });
+                continue;
+            }
+
+            if tc.name == READ_TASK_TOOL_NAME {
+                let task_id = args.get("task_id").and_then(|v| v.as_str());
+                let (result, is_error) = match task_id {
+                    Some(task_id) => {
+                        if let Some(task) = plan_tasks.iter().find(|t| t.id == task_id) {
+                            (serde_json::to_string_pretty(task).unwrap_or_else(|_| "Serialization error".into()), false)
+                        } else {
+                            (format!("Task not found: {}", task_id), true)
+                        }
+                    }
+                    None => ("Missing required 'task_id'".to_string(), true),
+                };
+                session.messages.push(ConversationMessage::tool_result(
+                    tc.id.clone(), tc.name.clone(), result.clone(), is_error, Some(args.clone()),
+                ));
+                let _ = event_tx.send(AgentEvent::ToolResult {
+                    tool_call_id: tc.id.clone(), name: tc.name.clone(),
+                    content: result, is_error, arguments: Some(args.clone()),
                 });
                 continue;
             }
 
             if tc.name == READ_PLAN_TOOL_NAME {
-                let result = if current_plan.is_empty() {
+                let result = if plan_tasks.is_empty() {
                     "No plan stored".to_string()
                 } else {
-                    current_plan.clone()
+                    serde_json::to_string_pretty(&plan_tasks).unwrap_or_else(|_| "Serialization error".into())
                 };
                 session.messages.push(ConversationMessage::tool_result(
-                    tc.id.clone(),
-                    tc.name.clone(),
-                    result.clone(),
-                    false,
-                    Some(args.clone()),
+                    tc.id.clone(), tc.name.clone(), result.clone(), false, Some(args.clone()),
                 ));
                 let _ = event_tx.send(AgentEvent::ToolResult {
-                    tool_call_id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    content: result,
-                    is_error: false,
-                    arguments: Some(args.clone()),
+                    tool_call_id: tc.id.clone(), name: tc.name.clone(),
+                    content: result, is_error: false, arguments: Some(args.clone()),
                 });
                 continue;
             }
 
             if tc.name == REVIEW_PLAN_TOOL_NAME {
-                let is_error = current_plan.is_empty();
+                let is_error = plan_tasks.is_empty();
                 let result = if is_error {
                     "No plan stored".to_string()
                 } else {
                     "Plan submitted for review".to_string()
                 };
                 session.messages.push(ConversationMessage::tool_result(
-                    tc.id.clone(),
-                    tc.name.clone(),
-                    result.clone(),
-                    is_error,
-                    Some(args.clone()),
+                    tc.id.clone(), tc.name.clone(), result.clone(), is_error, Some(args.clone()),
                 ));
                 let _ = event_tx.send(AgentEvent::ToolResult {
-                    tool_call_id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    content: result,
-                    is_error,
-                    arguments: Some(args.clone()),
+                    tool_call_id: tc.id.clone(), name: tc.name.clone(),
+                    content: result, is_error, arguments: Some(args.clone()),
                 });
                 if !is_error {
                     let _ = event_tx.send(AgentEvent::PlanReadyForReview {
-                        content: current_plan.clone(),
+                        tasks: plan_tasks.clone(),
                     });
                 }
+                continue;
+            }
+
+            if tc.name == UPDATE_TASK_STATUS_TOOL_NAME {
+                let task_id = args.get("task_id").and_then(|v| v.as_str());
+                let status_str = args.get("status").and_then(|v| v.as_str());
+
+                let (result, is_error) = match (task_id, status_str) {
+                    (Some(task_id), Some(status_str)) => {
+                        let status = match status_str {
+                            "not_started" => Some(TaskStatus::NotStarted),
+                            "in_progress" => Some(TaskStatus::InProgress),
+                            "done" => Some(TaskStatus::Done),
+                            _ => None,
+                        };
+                        match status {
+                            Some(status) => {
+                                if let Some(task) = plan_tasks.iter_mut().find(|t| t.id == task_id) {
+                                    task.status = status;
+                                    ("Status updated".to_string(), false)
+                                } else {
+                                    (format!("Task not found: {}", task_id), true)
+                                }
+                            }
+                            None => (format!("Invalid status: {}. Use not_started, in_progress, or done", status_str), true),
+                        }
+                    }
+                    _ => ("Missing required 'task_id' or 'status'".to_string(), true),
+                };
+
+                if !is_error {
+                    let _ = event_tx.send(AgentEvent::PlanTaskStatusChanged {
+                        tasks: plan_tasks.clone(),
+                    });
+                }
+                session.messages.push(ConversationMessage::tool_result(
+                    tc.id.clone(), tc.name.clone(), result.clone(), is_error, Some(args.clone()),
+                ));
+                let _ = event_tx.send(AgentEvent::ToolResult {
+                    tool_call_id: tc.id.clone(), name: tc.name.clone(),
+                    content: result, is_error, arguments: Some(args.clone()),
+                });
                 continue;
             }
 

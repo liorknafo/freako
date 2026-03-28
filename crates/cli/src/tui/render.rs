@@ -55,11 +55,20 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
         .constraints([Constraint::Min(10), Constraint::Length(1), Constraint::Length(input_height)])
         .split(main_area);
 
+    let plan_panel_height: u16 = if app.plan_tasks.is_empty() {
+        0
+    } else {
+        // 1 line per task header + 1 line per description (review mode) + 1 for border
+        let lines = app.plan_tasks.len()
+            + if app.plan_pending_review { app.plan_tasks.len() } else { 0 }
+            + 1;
+        (lines as u16).clamp(3, 12)
+    };
     let chat_plan_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(8),
-            if app.current_plan_text.is_some() { Constraint::Length(10) } else { Constraint::Length(0) },
+            Constraint::Length(plan_panel_height),
         ])
         .split(main_chunks[0]);
 
@@ -181,15 +190,35 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
         }
     }
 
-    if let Some(plan_text) = &app.current_plan_text {
+    if !app.plan_tasks.is_empty() {
         let title = if app.plan_pending_review {
-            "Current Plan (ready for review)"
+            "Plan (ready for review — Enter to approve)"
         } else {
-            "Current Plan"
+            "Plan"
         };
-        let plan = Paragraph::new(plan_text.as_str())
-            .block(Block::default().title(title).style(Style::new().bg(SIDEBAR_BG)))
-            .style(Style::new().bg(SIDEBAR_BG).fg(Color::Indexed(252)))
+        let mut lines: Vec<Line<'_>> = Vec::new();
+        for task in &app.plan_tasks {
+            let status_prefix = match task.status {
+                freako_core::agent::events::TaskStatus::NotStarted => "[ ] ",
+                freako_core::agent::events::TaskStatus::InProgress => "[~] ",
+                freako_core::agent::events::TaskStatus::Done => "[x] ",
+            };
+            lines.push(Line::from(vec![
+                Span::styled(status_prefix, Style::new().fg(Color::Indexed(214))),
+                Span::styled(task.header.clone(), Style::new().fg(Color::Indexed(252)).add_modifier(Modifier::BOLD)),
+            ]));
+            // In review mode, show a brief description excerpt
+            if app.plan_pending_review && !task.description.is_empty() {
+                let excerpt: String = task.description.lines().next().unwrap_or("").chars().take(70).collect();
+                lines.push(Line::from(Span::styled(
+                    format!("    {}", excerpt),
+                    Style::new().fg(Color::Indexed(244)),
+                )));
+            }
+        }
+        let plan = Paragraph::new(lines)
+            .block(Block::default().title(title).borders(Borders::TOP).style(Style::new().bg(SIDEBAR_BG)))
+            .style(Style::new().bg(SIDEBAR_BG))
             .wrap(Wrap { trim: false });
         frame.render_widget(plan, chat_plan_chunks[1]);
     }
